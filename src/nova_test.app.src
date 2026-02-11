@@ -1,0 +1,10 @@
+{application, nova_test, [
+    {description, "Testing helpers for the Nova web framework"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [kernel, stdlib]},
+    {env, []},
+    {modules, []},
+    {licenses, ["MIT"]},
+    {links, [{"GitHub", "https://github.com/nova-framework/nova_test"}]}
+]}.
