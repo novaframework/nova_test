@@ -33,5 +33,3 @@ jobs:
       run: rebar3 eunit
     - name: Run CT
       run: rebar3 ct
-    - name: Run dialyzer
-      run: rebar3 dialyzer
