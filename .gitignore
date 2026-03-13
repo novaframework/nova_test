@@ -2,3 +2,5 @@ _build/
 rebar.lock
 erl_crash.dump
 *.beam
+CLAUDE.md
+doc/

@@ -96,13 +96,15 @@ groups() ->
 
 init_per_suite(Config) ->
     %% Load test_app as an OTP application
-    ok = application:load({application, test_app, [
-        {description, "Test app for nova_test"},
-        {vsn, "0.0.1"},
-        {mod, {test_app, []}},
-        {applications, [kernel, stdlib, nova]},
-        {modules, [test_app, test_sup, test_app_router, test_controller]}
-    ]}),
+    ok = application:load(
+        {application, test_app, [
+            {description, "Test app for nova_test"},
+            {vsn, "0.0.1"},
+            {mod, {test_app, []}},
+            {applications, [kernel, stdlib, nova]},
+            {modules, [test_app, test_sup, test_app_router, test_controller]}
+        ]}
+    ),
     %% Configure Nova to use test_app
     application:set_env(nova, bootstrap_application, test_app),
     application:set_env(nova, cowboy_configuration, #{port => 48484}),
@@ -128,9 +130,11 @@ get_json_test(Config) ->
     ?assertJson(#{<<"ok">> := true}, Resp).
 
 post_json_test(Config) ->
-    {ok, Resp} = nova_test:post("/test/json",
-                                #{json => #{<<"name">> => <<"Alice">>}},
-                                Config),
+    {ok, Resp} = nova_test:post(
+        "/test/json",
+        #{json => #{<<"name">> => <<"Alice">>}},
+        Config
+    ),
     ?assertStatus(201, Resp),
     ?assertJson(#{<<"name">> := <<"Alice">>}, Resp).
 
