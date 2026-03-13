@@ -55,33 +55,45 @@ with_auth_data(AuthData, Req) ->
 
 -spec with_query(Params :: map(), Req :: cowboy_req:req()) -> cowboy_req:req().
 with_query(Params, Req) ->
-    QS = maps:fold(fun(K, V, Acc) ->
-        KB = to_binary(K),
-        VB = to_binary(V),
-        case Acc of
-            <<>> -> <<KB/binary, "=", VB/binary>>;
-            _ -> <<Acc/binary, "&", KB/binary, "=", VB/binary>>
-        end
-    end, <<>>, Params),
+    QS = maps:fold(
+        fun(K, V, Acc) ->
+            KB = to_binary(K),
+            VB = to_binary(V),
+            case Acc of
+                <<>> -> <<KB/binary, "=", VB/binary>>;
+                _ -> <<Acc/binary, "&", KB/binary, "=", VB/binary>>
+            end
+        end,
+        <<>>,
+        Params
+    ),
     Req#{qs => QS}.
 
 -spec with_body(Body :: binary(), Req :: cowboy_req:req()) -> cowboy_req:req().
 with_body(Body, Req) ->
     Req#{body => Body}.
 
--spec with_peer(Peer :: {inet:ip_address(), inet:port_number()}, Req :: cowboy_req:req()) -> cowboy_req:req().
+-spec with_peer(Peer :: {inet:ip_address(), inet:port_number()}, Req :: cowboy_req:req()) ->
+    cowboy_req:req().
 with_peer(Peer, Req) ->
     Req#{peer => Peer}.
 
 %% Internal
 
-method_to_binary(get) -> <<"GET">>;
-method_to_binary(post) -> <<"POST">>;
-method_to_binary(put) -> <<"PUT">>;
-method_to_binary(patch) -> <<"PATCH">>;
-method_to_binary(delete) -> <<"DELETE">>;
-method_to_binary(head) -> <<"HEAD">>;
-method_to_binary(options) -> <<"OPTIONS">>;
+method_to_binary(get) ->
+    <<"GET">>;
+method_to_binary(post) ->
+    <<"POST">>;
+method_to_binary(put) ->
+    <<"PUT">>;
+method_to_binary(patch) ->
+    <<"PATCH">>;
+method_to_binary(delete) ->
+    <<"DELETE">>;
+method_to_binary(head) ->
+    <<"HEAD">>;
+method_to_binary(options) ->
+    <<"OPTIONS">>;
 method_to_binary(Method) when is_atom(Method) ->
     list_to_binary(string:uppercase(atom_to_list(Method))).
 
@@ -91,6 +103,8 @@ to_binary(V) when is_atom(V) -> atom_to_binary(V, utf8);
 to_binary(V) when is_integer(V) -> integer_to_binary(V).
 
 json_lib() ->
-    try nova:get_env(json_lib, thoas)
-    catch _:_ -> thoas
+    try
+        nova:get_env(json_lib, thoas)
+    catch
+        _:_ -> thoas
     end.

@@ -86,7 +86,9 @@ json_preserves_existing_headers_test() ->
 %% with_header/3
 
 header_added_test() ->
-    Req = nova_test_req:with_header(<<"authorization">>, <<"Bearer abc">>, nova_test_req:new(get, <<"/test">>)),
+    Req = nova_test_req:with_header(
+        <<"authorization">>, <<"Bearer abc">>, nova_test_req:new(get, <<"/test">>)
+    ),
     ?assertEqual(<<"Bearer abc">>, maps:get(<<"authorization">>, maps:get(headers, Req))).
 
 multiple_headers_test() ->
@@ -113,12 +115,16 @@ auth_data_test() ->
 %% with_query/2
 
 query_single_param_test() ->
-    Req = nova_test_req:with_query(#{<<"q">> => <<"erlang">>}, nova_test_req:new(get, <<"/search">>)),
+    Req = nova_test_req:with_query(
+        #{<<"q">> => <<"erlang">>}, nova_test_req:new(get, <<"/search">>)
+    ),
     ?assertEqual(<<"q=erlang">>, maps:get(qs, Req)).
 
 query_multiple_params_test() ->
-    Req = nova_test_req:with_query(#{<<"q">> => <<"erlang">>, <<"page">> => <<"1">>},
-                                   nova_test_req:new(get, <<"/search">>)),
+    Req = nova_test_req:with_query(
+        #{<<"q">> => <<"erlang">>, <<"page">> => <<"1">>},
+        nova_test_req:new(get, <<"/search">>)
+    ),
     QS = maps:get(qs, Req),
     ?assert(binary:match(QS, <<"q=erlang">>) =/= nomatch),
     ?assert(binary:match(QS, <<"page=1">>) =/= nomatch),
@@ -156,10 +162,17 @@ peer_set_test() ->
 %% Chaining
 
 full_chain_test() ->
-    Req = nova_test_req:with_auth_data(#{user_id => 1},
-          nova_test_req:with_header(<<"authorization">>, <<"Bearer t">>,
-          nova_test_req:with_json(#{<<"name">> => <<"Alice">>},
-          nova_test_req:new(post, <<"/api/users">>)))),
+    Req = nova_test_req:with_auth_data(
+        #{user_id => 1},
+        nova_test_req:with_header(
+            <<"authorization">>,
+            <<"Bearer t">>,
+            nova_test_req:with_json(
+                #{<<"name">> => <<"Alice">>},
+                nova_test_req:new(post, <<"/api/users">>)
+            )
+        )
+    ),
     ?assertEqual(<<"POST">>, maps:get(method, Req)),
     ?assertEqual(#{<<"name">> => <<"Alice">>}, maps:get(json, Req)),
     ?assertEqual(#{user_id => 1}, maps:get(auth_data, Req)),

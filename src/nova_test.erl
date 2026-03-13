@@ -58,7 +58,8 @@ stop(Config) ->
 get(Path, Config) ->
     request(get, Path, #{}, Config).
 
--spec get(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) -> {ok, response()} | {error, term()}.
+-spec get(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) ->
+    {ok, response()} | {error, term()}.
 get(Path, Opts, Config) ->
     request(get, Path, Opts, Config).
 
@@ -66,15 +67,18 @@ get(Path, Opts, Config) ->
 post(Path, Config) ->
     request(post, Path, #{}, Config).
 
--spec post(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) -> {ok, response()} | {error, term()}.
+-spec post(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) ->
+    {ok, response()} | {error, term()}.
 post(Path, Opts, Config) ->
     request(post, Path, Opts, Config).
 
--spec put(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) -> {ok, response()} | {error, term()}.
+-spec put(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) ->
+    {ok, response()} | {error, term()}.
 put(Path, Opts, Config) ->
     request(put, Path, Opts, Config).
 
--spec patch(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) -> {ok, response()} | {error, term()}.
+-spec patch(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) ->
+    {ok, response()} | {error, term()}.
 patch(Path, Opts, Config) ->
     request(patch, Path, Opts, Config).
 
@@ -82,7 +86,8 @@ patch(Path, Opts, Config) ->
 delete(Path, Config) ->
     request(delete, Path, #{}, Config).
 
--spec delete(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) -> {ok, response()} | {error, term()}.
+-spec delete(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) ->
+    {ok, response()} | {error, term()}.
 delete(Path, Opts, Config) ->
     request(delete, Path, Opts, Config).
 
@@ -146,10 +151,11 @@ build_headers(_) ->
 build_request(URL, Headers, #{json := Json}) ->
     JsonLib = json_lib(),
     Body = JsonLib:encode(Json),
-    BodyStr = case Body of
-        B when is_binary(B) -> binary_to_list(B);
-        B when is_list(B) -> B
-    end,
+    BodyStr =
+        case Body of
+            B when is_binary(B) -> binary_to_list(B);
+            B when is_list(B) -> B
+        end,
     {URL, Headers, "application/json", BodyStr};
 build_request(URL, Headers, #{body := Body, content_type := CT}) ->
     BodyStr = binary_to_list(Body),
@@ -161,6 +167,8 @@ build_request(URL, Headers, _) ->
     {URL, Headers}.
 
 json_lib() ->
-    try nova:get_env(json_lib, thoas)
-    catch _:_ -> thoas
+    try
+        nova:get_env(json_lib, thoas)
+    catch
+        _:_ -> thoas
     end.
