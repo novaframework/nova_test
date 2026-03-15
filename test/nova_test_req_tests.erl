@@ -159,6 +159,57 @@ peer_set_test() ->
     Req = nova_test_req:with_peer(Peer, nova_test_req:new(get, <<"/info">>)),
     ?assertEqual(Peer, maps:get(peer, Req)).
 
+%% with_multipart/2
+
+multipart_sets_body_test() ->
+    Fields = [{field, <<"name">>, <<"test">>}],
+    Req = nova_test_req:with_multipart(Fields, nova_test_req:new(post, <<"/upload">>)),
+    ?assert(is_binary(maps:get(body, Req))),
+    ?assertEqual(Fields, maps:get(multipart, Req)).
+
+multipart_sets_content_type_test() ->
+    Fields = [{field, <<"name">>, <<"test">>}],
+    Req = nova_test_req:with_multipart(Fields, nova_test_req:new(post, <<"/upload">>)),
+    CT = maps:get(<<"content-type">>, maps:get(headers, Req)),
+    ?assertMatch(<<"multipart/form-data; boundary=", _/binary>>, CT).
+
+multipart_file_body_test() ->
+    Fields = [{file, <<"doc">>, <<"test.txt">>, <<"text/plain">>, <<"hello">>}],
+    Req = nova_test_req:with_multipart(Fields, nova_test_req:new(post, <<"/upload">>)),
+    Body = maps:get(body, Req),
+    ?assert(binary:match(Body, <<"filename=\"test.txt\"">>) =/= nomatch),
+    ?assert(binary:match(Body, <<"hello">>) =/= nomatch).
+
+multipart_preserves_headers_test() ->
+    Req0 = nova_test_req:with_header(
+        <<"x-custom">>, <<"val">>, nova_test_req:new(post, <<"/upload">>)
+    ),
+    Req1 = nova_test_req:with_multipart([{field, <<"k">>, <<"v">>}], Req0),
+    Headers = maps:get(headers, Req1),
+    ?assertEqual(<<"val">>, maps:get(<<"x-custom">>, Headers)).
+
+%% with_cookies/2
+
+cookies_single_test() ->
+    Req = nova_test_req:with_cookies(
+        #{<<"session">> => <<"abc">>}, nova_test_req:new(get, <<"/">>)
+    ),
+    Cookie = maps:get(<<"cookie">>, maps:get(headers, Req)),
+    ?assertEqual(<<"session=abc">>, Cookie).
+
+cookies_multiple_test() ->
+    Cookies = #{<<"a">> => <<"1">>, <<"b">> => <<"2">>},
+    Req = nova_test_req:with_cookies(Cookies, nova_test_req:new(get, <<"/">>)),
+    Cookie = maps:get(<<"cookie">>, maps:get(headers, Req)),
+    ?assert(binary:match(Cookie, <<"a=1">>) =/= nomatch),
+    ?assert(binary:match(Cookie, <<"b=2">>) =/= nomatch).
+
+cookies_preserves_headers_test() ->
+    Req0 = nova_test_req:with_header(<<"accept">>, <<"*/*">>, nova_test_req:new(get, <<"/">>)),
+    Req1 = nova_test_req:with_cookies(#{<<"s">> => <<"v">>}, Req0),
+    Headers = maps:get(headers, Req1),
+    ?assertEqual(<<"*/*">>, maps:get(<<"accept">>, Headers)).
+
 %% Chaining
 
 full_chain_test() ->

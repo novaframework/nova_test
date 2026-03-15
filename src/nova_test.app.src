@@ -2,7 +2,7 @@
     {description, "Testing helpers for the Nova web framework"},
     {vsn, git},
     {registered, []},
-    {applications, [kernel, stdlib]},
+    {applications, [kernel, stdlib, gun]},
     {env, []},
     {modules, []},
     {licenses, ["MIT"]},

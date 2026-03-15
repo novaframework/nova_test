@@ -17,7 +17,18 @@
     body/1,
     json/1,
     headers/1,
-    header/2
+    header/2,
+    %% Cookie management
+    save_cookies/2,
+    cookies/1,
+    cookie/2,
+    set_cookie/3,
+    clear_cookies/1,
+    %% Logging
+    enable_logging/1,
+    disable_logging/1,
+    %% Multipart (exported for nova_test_req)
+    build_multipart_body/2
 ]).
 
 -type response() :: #{
@@ -26,11 +37,16 @@
     body := binary()
 }.
 
+-type multipart_field() ::
+    {field, Name :: binary(), Value :: binary()}
+    | {file, Name :: binary(), Filename :: binary(), ContentType :: binary(), Data :: binary()}.
+
 -type opts() :: #{
     headers => [{binary(), binary()}],
     json => map(),
     body => binary(),
-    content_type => string()
+    content_type => string(),
+    multipart => [multipart_field()]
 }.
 
 %% Lifecycle
@@ -96,18 +112,20 @@ delete(Path, Opts, Config) ->
 request(Method, Path, Opts, Config) ->
     Port = proplists:get_value(nova_test_port, Config),
     URL = "http://localhost:" ++ integer_to_list(Port) ++ Path,
-    Headers = build_headers(Opts),
+    Headers = build_headers(Opts) ++ cookie_header(Config),
     HttpMethod = Method,
     Request = build_request(URL, Headers, Opts),
     HttpOpts = [{autoredirect, false}],
     ReqOpts = [{body_format, binary}],
     case httpc:request(HttpMethod, Request, HttpOpts, ReqOpts) of
         {ok, {{_, Status, _}, RespHeaders, Body}} ->
-            {ok, #{
+            Response = #{
                 status => Status,
                 headers => RespHeaders,
                 body => Body
-            }};
+            },
+            maybe_log(Method, Path, Opts, Response, Config),
+            {ok, Response};
         {error, Reason} ->
             {error, Reason}
     end.
@@ -137,6 +155,51 @@ header(Name, #{headers := Headers}) ->
         false -> undefined
     end.
 
+%% Cookie management
+
+-spec save_cookies(response(), [{atom(), term()}]) -> [{atom(), term()}].
+save_cookies(#{headers := Headers}, Config) ->
+    SetCookies = extract_set_cookies(Headers),
+    Existing = proplists:get_value(nova_test_cookies, Config, #{}),
+    Merged = maps:merge(Existing, SetCookies),
+    [{nova_test_cookies, Merged} | proplists:delete(nova_test_cookies, Config)].
+
+-spec cookies(Config :: [{atom(), term()}]) -> map().
+cookies(Config) ->
+    proplists:get_value(nova_test_cookies, Config, #{}).
+
+-spec cookie(Name :: binary(), Config :: [{atom(), term()}]) -> binary() | undefined.
+cookie(Name, Config) ->
+    maps:get(Name, cookies(Config), undefined).
+
+-spec set_cookie(Name :: binary(), Value :: binary(), Config :: [{atom(), term()}]) ->
+    [{atom(), term()}].
+set_cookie(Name, Value, Config) ->
+    Existing = proplists:get_value(nova_test_cookies, Config, #{}),
+    Updated = Existing#{Name => Value},
+    [{nova_test_cookies, Updated} | proplists:delete(nova_test_cookies, Config)].
+
+-spec clear_cookies(Config :: [{atom(), term()}]) -> [{atom(), term()}].
+clear_cookies(Config) ->
+    [{nova_test_cookies, #{}} | proplists:delete(nova_test_cookies, Config)].
+
+%% Logging
+
+-spec enable_logging(Config :: [{atom(), term()}]) -> [{atom(), term()}].
+enable_logging(Config) ->
+    [{nova_test_logging, true} | proplists:delete(nova_test_logging, Config)].
+
+-spec disable_logging(Config :: [{atom(), term()}]) -> [{atom(), term()}].
+disable_logging(Config) ->
+    [{nova_test_logging, false} | proplists:delete(nova_test_logging, Config)].
+
+%% Multipart
+
+-spec build_multipart_body([multipart_field()], Boundary :: binary()) -> iolist().
+build_multipart_body(Fields, Boundary) ->
+    Parts = [multipart_part(Field, Boundary) || Field <- Fields],
+    [Parts, <<"--", Boundary/binary, "--\r\n">>].
+
 %% Internal
 
 get_port() ->
@@ -157,6 +220,11 @@ build_request(URL, Headers, #{json := Json}) ->
             B when is_list(B) -> B
         end,
     {URL, Headers, "application/json", BodyStr};
+build_request(URL, Headers, #{multipart := Fields}) ->
+    Boundary = generate_boundary(),
+    Body = iolist_to_binary(build_multipart_body(Fields, Boundary)),
+    CT = "multipart/form-data; boundary=" ++ binary_to_list(Boundary),
+    {URL, Headers, CT, binary_to_list(Body)};
 build_request(URL, Headers, #{body := Body, content_type := CT}) ->
     BodyStr = binary_to_list(Body),
     {URL, Headers, CT, BodyStr};
@@ -172,3 +240,109 @@ json_lib() ->
     catch
         _:_ -> thoas
     end.
+
+cookie_header(Config) ->
+    case proplists:get_value(nova_test_cookies, Config, #{}) of
+        Cookies when map_size(Cookies) =:= 0 ->
+            [];
+        Cookies ->
+            CookieStr = maps:fold(
+                fun(Name, Value, Acc) ->
+                    Pair = binary_to_list(Name) ++ "=" ++ binary_to_list(Value),
+                    case Acc of
+                        "" -> Pair;
+                        _ -> Acc ++ "; " ++ Pair
+                    end
+                end,
+                "",
+                Cookies
+            ),
+            [{"cookie", CookieStr}]
+    end.
+
+extract_set_cookies(Headers) ->
+    lists:foldl(
+        fun({Key, Value}, Acc) ->
+            case string:lowercase(Key) of
+                "set-cookie" ->
+                    case parse_cookie(Value) of
+                        {Name, Val} -> Acc#{Name => Val};
+                        error -> Acc
+                    end;
+                _ ->
+                    Acc
+            end
+        end,
+        #{},
+        Headers
+    ).
+
+parse_cookie(CookieStr) ->
+    case string:split(CookieStr, ";") of
+        [NameValue | _] ->
+            case string:split(string:trim(NameValue), "=") of
+                [Name, Value] ->
+                    {list_to_binary(string:trim(Name)), list_to_binary(string:trim(Value))};
+                _ ->
+                    error
+            end;
+        _ ->
+            error
+    end.
+
+maybe_log(Method, Path, Opts, #{status := Status, headers := RespHeaders, body := Body}, Config) ->
+    case proplists:get_value(nova_test_logging, Config, false) of
+        true ->
+            ReqBody =
+                case Opts of
+                    #{json := Json} ->
+                        JsonLib = json_lib(),
+                        JsonLib:encode(Json);
+                    #{body := B} ->
+                        B;
+                    _ ->
+                        <<>>
+                end,
+            ct:pal(
+                "~n=== nova_test ~s ~s ===~n"
+                "Request headers: ~p~n"
+                "Request body: ~ts~n"
+                "Response status: ~p~n"
+                "Response headers: ~p~n"
+                "Response body: ~ts~n",
+                [
+                    string:uppercase(atom_to_list(Method)),
+                    Path,
+                    build_headers(Opts),
+                    ReqBody,
+                    Status,
+                    RespHeaders,
+                    Body
+                ]
+            );
+        false ->
+            ok
+    end.
+
+generate_boundary() ->
+    Int = erlang:unique_integer([positive]),
+    <<"----nova_test_", (integer_to_binary(Int))/binary>>.
+
+multipart_part({field, Name, Value}, Boundary) ->
+    [
+        <<"--", Boundary/binary, "\r\n">>,
+        <<"Content-Disposition: form-data; name=\"", Name/binary, "\"\r\n">>,
+        <<"\r\n">>,
+        Value,
+        <<"\r\n">>
+    ];
+multipart_part({file, Name, Filename, ContentType, Data}, Boundary) ->
+    [
+        <<"--", Boundary/binary, "\r\n">>,
+        <<"Content-Disposition: form-data; name=\"", Name/binary, "\"; filename=\"",
+            Filename/binary, "\"\r\n">>,
+        <<"Content-Type: ", ContentType/binary, "\r\n">>,
+        <<"\r\n">>,
+        Data,
+        <<"\r\n">>
+    ].
