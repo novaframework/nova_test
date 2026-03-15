@@ -44,6 +44,19 @@ nova_test:stop(Config).
 
 -export_type([response/0, opts/0, multipart_field/0]).
 
+-ifdef(TEST).
+-export([
+    build_headers/1,
+    build_request/3,
+    cookie_header/1,
+    extract_set_cookies/1,
+    parse_cookie/1,
+    maybe_log/5,
+    generate_boundary/0,
+    multipart_part/2
+]).
+-endif.
+
 -type response() :: #{
     status := integer(),
     headers := [{string(), string()}],
