@@ -1,4 +1,17 @@
 -module(nova_test_req).
+-moduledoc """
+Mock Cowboy request builder for unit testing Nova controllers without HTTP.
+
+Builds request maps compatible with Nova's controller interface,
+enabling fast isolated tests that call controller functions directly.
+
+```erlang
+Req = nova_test_req:new(post, "/api/users"),
+Req1 = nova_test_req:with_json(#{<<"name">> => <<"alice">>}, Req),
+Result = my_controller:create(Req1),
+?assertJsonResponse(201, #{<<"id">> := _}, Result).
+```
+""".
 
 -export([
     new/2,

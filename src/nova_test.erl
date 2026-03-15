@@ -1,4 +1,18 @@
 -module(nova_test).
+-moduledoc """
+HTTP client for integration testing Nova applications.
+
+Start your Nova app, make HTTP requests, and assert on responses.
+Manages cookies across requests via the CT Config proplist.
+
+```erlang
+Config = nova_test:start(my_app),
+{ok, Resp} = nova_test:get("/api/users", Config),
+?assertStatus(200, Resp),
+?assertJson(#{<<"users">> := _}, Resp),
+nova_test:stop(Config).
+```
+""".
 
 -export([
     start/1,
@@ -18,18 +32,17 @@
     json/1,
     headers/1,
     header/2,
-    %% Cookie management
     save_cookies/2,
     cookies/1,
     cookie/2,
     set_cookie/3,
     clear_cookies/1,
-    %% Logging
     enable_logging/1,
     disable_logging/1,
-    %% Multipart (exported for nova_test_req)
     build_multipart_body/2
 ]).
+
+-export_type([response/0, opts/0, multipart_field/0]).
 
 -type response() :: #{
     status := integer(),

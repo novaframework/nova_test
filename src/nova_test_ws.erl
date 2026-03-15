@@ -1,4 +1,16 @@
 -module(nova_test_ws).
+-moduledoc """
+WebSocket client for integration testing Nova WebSocket endpoints.
+
+Uses `gun` to connect, send frames, and receive responses.
+
+```erlang
+{ok, Conn} = nova_test_ws:connect("/ws", Config),
+ok = nova_test_ws:send_json(#{<<"action">> => <<"ping">>}, Conn),
+{ok, Data} = nova_test_ws:recv_json(Conn),
+ok = nova_test_ws:close(Conn).
+```
+""".
 
 -export([
     connect/2,
@@ -11,6 +23,8 @@
     recv_json/2,
     close/1
 ]).
+
+-export_type([conn/0, ws_opts/0]).
 
 -type conn() :: #{
     gun_pid := pid(),
