@@ -48,4 +48,20 @@
     ?assertMatch({ok, Pattern}, Result)
 ).
 
+%% Cookie assertions
+
+-define(assertCookie(Name, Expected, Config),
+    ?assertEqual(Expected, nova_test:cookie(Name, Config))
+).
+
+%% WebSocket assertions
+
+-define(assertWsRecv(Pattern, Conn),
+    ?assertMatch({ok, Pattern}, nova_test_ws:recv(Conn))
+).
+
+-define(assertWsRecvJson(Pattern, Conn),
+    ?assertMatch({ok, Pattern}, nova_test_ws:recv_json(Conn))
+).
+
 -endif.

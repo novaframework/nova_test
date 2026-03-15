@@ -1,4 +1,17 @@
 -module(nova_test_req).
+-moduledoc """
+Mock Cowboy request builder for unit testing Nova controllers without HTTP.
+
+Builds request maps compatible with Nova's controller interface,
+enabling fast isolated tests that call controller functions directly.
+
+```erlang
+Req = nova_test_req:new(post, "/api/users"),
+Req1 = nova_test_req:with_json(#{<<"name">> => <<"alice">>}, Req),
+Result = my_controller:create(Req1),
+?assertJsonResponse(201, #{<<"id">> := _}, Result).
+```
+""".
 
 -export([
     new/2,
@@ -8,7 +21,9 @@
     with_auth_data/2,
     with_query/2,
     with_body/2,
-    with_peer/2
+    with_peer/2,
+    with_multipart/2,
+    with_cookies/2
 ]).
 
 -spec new(Method :: atom(), Path :: string() | binary()) -> cowboy_req:req().
@@ -77,6 +92,35 @@ with_body(Body, Req) ->
     cowboy_req:req().
 with_peer(Peer, Req) ->
     Req#{peer => Peer}.
+
+-spec with_multipart(Fields :: [nova_test:multipart_field()], Req :: cowboy_req:req()) ->
+    cowboy_req:req().
+with_multipart(Fields, Req) ->
+    Boundary = <<"----nova_test_boundary">>,
+    Body = iolist_to_binary(nova_test:build_multipart_body(Fields, Boundary)),
+    Headers = maps:get(headers, Req, #{}),
+    CT = <<"multipart/form-data; boundary=", Boundary/binary>>,
+    Req#{
+        body => Body,
+        headers => Headers#{<<"content-type">> => CT},
+        multipart => Fields
+    }.
+
+-spec with_cookies(Cookies :: map(), Req :: cowboy_req:req()) -> cowboy_req:req().
+with_cookies(Cookies, Req) ->
+    CookieStr = maps:fold(
+        fun(Name, Value, Acc) ->
+            Pair = <<Name/binary, "=", Value/binary>>,
+            case Acc of
+                <<>> -> Pair;
+                _ -> <<Acc/binary, "; ", Pair/binary>>
+            end
+        end,
+        <<>>,
+        Cookies
+    ),
+    Headers = maps:get(headers, Req, #{}),
+    Req#{headers => Headers#{<<"cookie">> => CookieStr}}.
 
 %% Internal
 
