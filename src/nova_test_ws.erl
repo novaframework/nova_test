@@ -26,6 +26,12 @@ ok = nova_test_ws:close(Conn).
 
 -export_type([conn/0, ws_opts/0]).
 
+-ifdef(TEST).
+-export([
+    maybe_log_ws/3
+]).
+-endif.
+
 -type conn() :: #{
     gun_pid := pid(),
     stream_ref := reference(),
