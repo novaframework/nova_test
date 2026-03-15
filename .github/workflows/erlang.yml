@@ -11,3 +11,8 @@ jobs:
       enable-ct: true
       enable-ex-doc: true
       enable-dialyzer: false
+      enable-audit: true
+      enable-sbom: true
+      enable-sbom-scan: true
+      enable-dependency-submission: true
+      enable-summary: true
