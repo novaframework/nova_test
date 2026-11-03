@@ -600,3 +600,25 @@ log_text(Method, Path, Opts, Resp) ->
     case unicode:characters_to_binary(nova_test:log_message(Method, Path, Opts, Resp)) of
         Text when is_binary(Text) -> Text
     end.
+
+%% Listener choice
+
+started_listener_prefers_configured_port_test() ->
+    Cowboy = application:get_env(nova, cowboy_configuration, undefined),
+    application:set_env(nova, cowboy_configuration, #{port => 8080}),
+    try
+        Started = [
+            #{app => a, host => {0, 0, 0, 0}, port => 8443, listener => tls_ref},
+            #{app => a, host => {0, 0, 0, 0}, port => 8080, listener => http_ref}
+        ],
+        ?assertEqual({ok, http_ref}, nova_test:started_listener(a, Started)),
+        ?assertEqual(
+            {ok, tls_ref}, nova_test:started_listener(a, lists:sublist(Started, 1))
+        ),
+        ?assertEqual({error, no_listener_for_app}, nova_test:started_listener(b, Started))
+    after
+        restore_env(nova, cowboy_configuration, Cowboy)
+    end.
+
+restore_env(App, Key, undefined) -> application:unset_env(App, Key);
+restore_env(App, Key, Value) -> application:set_env(App, Key, Value).

@@ -83,6 +83,7 @@ module when neither sets it.
     parse_set_cookie/1,
     maybe_log/5,
     log_message/4,
+    started_listener/2,
     generate_boundary/0,
     multipart_part/2
 ]).
@@ -594,13 +595,19 @@ listener_ref(App) ->
         false -> {ok, nova_listener}
     end.
 
+%% An application can have several listeners (an HTTP and an HTTPS one, or
+%% one added with nova_sup:add_application/2). Prefer the one bound to the
+%% port cowboy_configuration asks for, so the choice does not depend on the
+%% order of Nova's listener table.
 started_listener(App, Started) ->
     Bootstrap = application:get_env(nova, bootstrap_application, undefined),
-    Own = [L || #{app := A, listener := L} <- Started, A =:= App],
-    Boot = [L || #{app := A, listener := L} <- Started, A =:= Bootstrap],
-    case Own ++ Boot of
-        [Ref | _] -> {ok, Ref};
-        [] -> {error, no_listener_for_app}
+    Own = [S || #{app := A, listener := _} = S <- Started, A =:= App],
+    Boot = [S || #{app := A, listener := _} = S <- Started, A =:= Bootstrap],
+    Candidates = Own ++ Boot,
+    Port = configured_port(),
+    case [S || S <- Candidates, maps:get(port, S, undefined) =:= Port] ++ Candidates of
+        [#{listener := Ref} | _] -> {ok, Ref};
+        _ -> {error, no_listener_for_app}
     end.
 
 configured_port() ->

@@ -56,6 +56,9 @@ port is taken), `start` stops what it started and raises
 instead of letting the tests talk to whatever owns the port. An application that was
 already running before the call is left running.
 
+When the application has several listeners, `start` uses the one bound to the port
+`cowboy_configuration` asks for (`ssl_port` with `use_ssl => true`, otherwise `port`).
+
 Only plain HTTP listeners are supported. With `use_ssl => true` in
 `cowboy_configuration`, `start` stops what it started and raises
 `{nova_test_tls_not_supported, #{app := App, port := Port}}`; test against a plain HTTP
