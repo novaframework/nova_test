@@ -62,11 +62,7 @@ Open a WebSocket to `Path` on the application started by `nova_test:start/1,2`.
 connect(Path, Opts, Config) ->
     ok = nova_test:check_path(Path),
     {ok, _} = application:ensure_all_started(gun),
-    Port =
-        case proplists:get_value(nova_test_port, Config) of
-            P when is_integer(P), P >= 0, P =< 65535 -> P;
-            _ -> erlang:error({nova_test_not_started, ~"call nova_test:start/1,2 first"})
-        end,
+    Port = nova_test:port(Config),
     {ok, GunPid} = gun:open("localhost", Port, #{protocols => [http]}),
     case gun:await_up(GunPid, 5000) of
         {ok, _Protocol} ->

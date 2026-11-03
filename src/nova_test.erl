@@ -60,6 +60,7 @@ module when neither sets it.
     disable_logging/1,
     build_multipart_body/2,
     check_path/1,
+    port/1,
     with_cookie_header/3
 ]).
 
@@ -428,8 +429,7 @@ Malformed headers (no `=` in the first pair) are skipped.
 set_cookies(#{headers := Headers}) ->
     [
         #{name => Name, value => Value, attributes => Attributes}
-     || {Key, CookieStr} <- Headers,
-        string:lowercase(Key) =:= "set-cookie",
+     || CookieStr <- set_cookie_values(Headers),
         {Name, Value, Attributes} <- [split_set_cookie(CookieStr)]
     ].
 
@@ -654,9 +654,11 @@ configured_port() ->
         _ -> 8080
     end.
 
+-doc false.
+-spec port(config()) -> inet:port_number().
 port(Config) ->
     case proplists:get_value(nova_test_port, Config) of
-        Port when is_integer(Port) -> Port;
+        Port when is_integer(Port), Port >= 0, Port =< 65535 -> Port;
         _ -> erlang:error({nova_test_not_started, ~"call nova_test:start/1,2 first"})
     end.
 
@@ -681,7 +683,6 @@ build_request(URL, Headers, #{body := Body}) ->
 build_request(URL, Headers, _) ->
     {URL, Headers}.
 
-%% httpc returns headers as strings.
 -spec httpc_headers(dynamic()) -> [{string(), string()}].
 httpc_headers(Headers) ->
     [{K, V} || {K, V} <- Headers].
@@ -723,13 +724,7 @@ jar_entries(Jar) ->
 -spec update_jar(ets:tid(), [{string(), string()}], string()) -> ok.
 update_jar(Jar, Headers, Path) ->
     DefaultPath = default_path(request_path(Path)),
-    _ = [
-        update_jar_cookie(Jar, Cookie, DefaultPath)
-     || {Key, Value} <- Headers,
-        string:lowercase(Key) =:= "set-cookie",
-        Cookie <- [parse_set_cookie(Value)],
-        Cookie =/= error
-    ],
+    _ = [update_jar_cookie(Jar, Cookie, DefaultPath) || Cookie <- parsed_set_cookies(Headers)],
     ok.
 
 update_jar_cookie(Jar, {Name, _, expired, CookiePath}, DefaultPath) ->
@@ -767,19 +762,24 @@ path_match(RequestPath, CookiePath) ->
             false
     end.
 
-merge_set_cookies([], Cookies) ->
+merge_set_cookies(Headers, Cookies) ->
+    merge_cookies(parsed_set_cookies(Headers), Cookies).
+
+merge_cookies([], Cookies) ->
     Cookies;
-merge_set_cookies([{Key, Value} | Rest], Cookies) ->
-    case string:lowercase(Key) of
-        "set-cookie" ->
-            case parse_set_cookie(Value) of
-                {Name, _, expired, _} -> merge_set_cookies(Rest, maps:remove(Name, Cookies));
-                {Name, Val, active, _} -> merge_set_cookies(Rest, Cookies#{Name => Val});
-                error -> merge_set_cookies(Rest, Cookies)
-            end;
-        _ ->
-            merge_set_cookies(Rest, Cookies)
-    end.
+merge_cookies([{Name, _, expired, _} | Rest], Cookies) ->
+    merge_cookies(Rest, maps:remove(Name, Cookies));
+merge_cookies([{Name, Value, active, _} | Rest], Cookies) ->
+    merge_cookies(Rest, Cookies#{Name => Value}).
+
+-spec set_cookie_values([{string(), string()}]) -> [string()].
+set_cookie_values(Headers) ->
+    [V || {K, V} <- Headers, string:lowercase(K) =:= "set-cookie"].
+
+-spec parsed_set_cookies([{string(), string()}]) ->
+    [{binary(), binary(), active | expired, binary() | undefined}].
+parsed_set_cookies(Headers) ->
+    [C || V <- set_cookie_values(Headers), C <- [parse_set_cookie(V)], C =/= error].
 
 -spec parse_set_cookie(string()) ->
     {binary(), binary(), active | expired, binary() | undefined} | error.

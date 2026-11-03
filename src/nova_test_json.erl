@@ -49,7 +49,7 @@ json_lib() ->
             end
     end.
 
-%% nova_json (Nova 0.19+) resolves json_lib itself; delegate when it exists.
+%% nova_json resolves json_lib itself; delegate when it exists.
 -spec nova_json_module() -> {ok, module()} | error.
 nova_json_module() ->
     case code:ensure_loaded(nova_json) of
