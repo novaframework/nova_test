@@ -8,6 +8,8 @@
     bound_port_is_used_test/1,
     tls_listener_fails_test/1,
     second_app_keeps_listener_test/1,
+    stop_in_start_order_test/1,
+    stop_in_reverse_order_test/1,
     running_app_kept_when_listener_missing_test/1,
     running_app_kept_on_tls_test/1
 ]).
@@ -20,6 +22,8 @@ all() ->
         bound_port_is_used_test,
         tls_listener_fails_test,
         second_app_keeps_listener_test,
+        stop_in_start_order_test,
+        stop_in_reverse_order_test,
         running_app_kept_when_listener_missing_test,
         running_app_kept_on_tls_test
     ].
@@ -73,12 +77,29 @@ second_app_keeps_listener_test(Config0) ->
         {ok, Resp} = nova_test:get("/test/json", ConfigB),
         ?assertStatus(200, Resp),
         ok = nova_test:stop(ConfigB),
-        ?assert(lists:keymember(nova, 1, application:which_applications()))
+        ?assertNot(lists:keymember(nova, 1, application:which_applications()))
     after
-        nova_test:stop(ConfigB),
-        nova_test:stop(ConfigA)
-    end,
-    ?assertNot(lists:keymember(nova, 1, application:which_applications())).
+        nova_test:stop(ConfigB)
+    end.
+
+stop_in_start_order_test(Config0) ->
+    ok = test_app_env:load(0),
+    ok = load_library_app(test_app_b),
+    ConfigA = nova_test:start(test_app, Config0),
+    ConfigB = nova_test:start(test_app_b, Config0),
+    ok = nova_test:stop(ConfigA),
+    ok = nova_test:stop(ConfigB),
+    assert_stopped([test_app, test_app_b, nova, cowboy, ranch]).
+
+stop_in_reverse_order_test(Config0) ->
+    ok = test_app_env:load(0),
+    ok = load_library_app(test_app_b),
+    ConfigA = nova_test:start(test_app, Config0),
+    ConfigB = nova_test:start(test_app_b, Config0),
+    ok = nova_test:stop(ConfigB),
+    ?assert(lists:keymember(nova, 1, application:which_applications())),
+    ok = nova_test:stop(ConfigA),
+    assert_stopped([test_app, test_app_b, nova, cowboy, ranch]).
 
 running_app_kept_when_listener_missing_test(Config) ->
     ok = test_app_env:load(?TAKEN_PORT),
@@ -102,6 +123,10 @@ running_app_kept_on_tls_test(Config) ->
     after
         stop_all(Started)
     end.
+
+assert_stopped(Apps) ->
+    Running = [A || {A, _, _} <- application:which_applications()],
+    ?assertEqual([], [A || A <- Apps, lists:member(A, Running)]).
 
 load_tls_env() ->
     {ok, _} = application:ensure_all_started(ssl),

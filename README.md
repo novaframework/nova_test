@@ -67,7 +67,8 @@ listener (for example a test profile without `use_ssl`).
 Call `nova_test:stop/1` last: it stops the application and the dependencies `start`
 started (nova, cowboy, ranch and any others), so the next suite gets a fresh listener. A
 dependency stays running while another running application still lists it in its
-`applications`, so `start(a)`, `start(b)`, `stop(a)` keeps the listener `b` uses.
+`applications`, so `start(a)`, `start(b)`, `stop(a)` keeps the listener `b` uses. The
+next `stop` stops it once nothing needs it, in either order.
 
 ### Request Options
 

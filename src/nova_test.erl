@@ -170,7 +170,9 @@ fresh listener. Call it last, after the tests that use the application.
 
 A dependency is left running while another running application still lists
 it in its `applications`, so `start(a)`, `start(b)`, `stop(a)` keeps the
-listener `b` uses.
+listener `b` uses. Such a dependency is remembered and stopped by a later
+`stop/1` once nothing running needs it, so both `stop(a)`, `stop(b)` and
+`stop(b)`, `stop(a)` leave nova, cowboy and ranch stopped.
 """.
 -spec stop(Config :: config()) -> ok.
 stop(Config) ->
@@ -542,25 +544,39 @@ check_path(Path) ->
 abort_start(App, Started) ->
     case lists:member(App, Started) of
         true -> stop_apps(App, Started);
-        false -> stop_unneeded(Started)
+        false -> release(Started)
     end.
 
 -spec stop_apps(atom(), [atom()]) -> ok.
 stop_apps(App, Started) ->
     _ = application:stop(App),
-    stop_unneeded([A || A <- Started, A =/= App]).
+    release([A || A <- Started, A =/= App]).
 
-%% Stop the applications no running application lists in its `applications`,
-%% repeating until nothing more can be stopped.
--spec stop_unneeded([atom()]) -> ok.
+%% Dependencies still needed by another running application are held back
+%% and retried by the next stop, so the order of stop/1 calls does not matter.
+-spec release([atom()]) -> ok.
+release(Apps) ->
+    Candidates = [A || A <- lists:usort(Apps ++ held_back()), is_atom(A)],
+    Kept = stop_unneeded(Candidates),
+    Running = [A || {A, _, _} <- application:which_applications()],
+    application:set_env(nova_test, held_back, [A || A <- Kept, lists:member(A, Running)]).
+
+-spec held_back() -> [atom()].
+held_back() ->
+    case application:get_env(nova_test, held_back, []) of
+        Apps when is_list(Apps) -> [A || A <- Apps, is_atom(A)];
+        _ -> []
+    end.
+
+-spec stop_unneeded([atom()]) -> [atom()].
 stop_unneeded([]) ->
-    ok;
+    [];
 stop_unneeded(Apps) ->
     Running = [A || {A, _, _} <- application:which_applications()],
     Needed = [D || R <- Running, D <- dependencies(R)],
     case [A || A <- Apps, not lists:member(A, Needed)] of
         [] ->
-            ok;
+            Apps;
         Free ->
             _ = [application:stop(A) || A <- Free],
             stop_unneeded([A || A <- Apps, not lists:member(A, Free)])
