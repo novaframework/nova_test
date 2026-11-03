@@ -53,7 +53,8 @@ the HTTP listener actually bound from Ranch, so `#{port => 0}` in `cowboy_config
 works. If the listener is not running (Nova only logs "Cowboy could not start" when the
 port is taken), `start` stops what it started and raises
 `{nova_test_listener_not_running, #{app := App, reason := Reason, configured_port := Port}}`
-instead of letting the tests talk to whatever owns the port.
+instead of letting the tests talk to whatever owns the port. An application that was
+already running before the call is left running.
 
 Only plain HTTP listeners are supported. With `use_ssl => true` in
 `cowboy_configuration`, `start` stops what it started and raises

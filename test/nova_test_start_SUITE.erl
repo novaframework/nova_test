@@ -7,7 +7,9 @@
     port_in_use_fails_test/1,
     bound_port_is_used_test/1,
     tls_listener_fails_test/1,
-    second_app_keeps_listener_test/1
+    second_app_keeps_listener_test/1,
+    running_app_kept_when_listener_missing_test/1,
+    running_app_kept_on_tls_test/1
 ]).
 
 -define(TAKEN_PORT, 58610).
@@ -17,7 +19,9 @@ all() ->
         port_in_use_fails_test,
         bound_port_is_used_test,
         tls_listener_fails_test,
-        second_app_keeps_listener_test
+        second_app_keeps_listener_test,
+        running_app_kept_when_listener_missing_test,
+        running_app_kept_on_tls_test
     ].
 
 port_in_use_fails_test(Config) ->
@@ -47,13 +51,7 @@ bound_port_is_used_test(Config0) ->
     end.
 
 tls_listener_fails_test(Config) ->
-    {ok, _} = application:ensure_all_started(ssl),
-    #{server_config := Server} = public_key:pkix_test_data(#{
-        server_chain => #{root => [], intermediates => [], peer => []},
-        client_chain => #{root => [], intermediates => [], peer => []}
-    }),
-    SslOptions = maps:with([cert, key], maps:from_list(Server)),
-    ok = test_app_env:load(0, #{use_ssl => true, ssl_port => 0, ssl_options => SslOptions}),
+    ok = load_tls_env(),
     ?assertError(
         {nova_test_tls_not_supported, #{app := test_app, port := _}},
         nova_test:start(test_app, Config)
@@ -81,6 +79,43 @@ second_app_keeps_listener_test(Config0) ->
         nova_test:stop(ConfigA)
     end,
     ?assertNot(lists:keymember(nova, 1, application:which_applications())).
+
+running_app_kept_when_listener_missing_test(Config) ->
+    ok = test_app_env:load(?TAKEN_PORT),
+    {ok, Socket} = gen_tcp:listen(?TAKEN_PORT, [{reuseaddr, true}]),
+    {ok, Started} = application:ensure_all_started(test_app),
+    try
+        ?assertError({nova_test_listener_not_running, _}, nova_test:start(test_app, Config)),
+        ?assert(lists:keymember(test_app, 1, application:which_applications())),
+        ?assert(lists:keymember(nova, 1, application:which_applications()))
+    after
+        stop_all(Started),
+        gen_tcp:close(Socket)
+    end.
+
+running_app_kept_on_tls_test(Config) ->
+    ok = load_tls_env(),
+    {ok, Started} = application:ensure_all_started(test_app),
+    try
+        ?assertError({nova_test_tls_not_supported, _}, nova_test:start(test_app, Config)),
+        ?assert(lists:keymember(test_app, 1, application:which_applications()))
+    after
+        stop_all(Started)
+    end.
+
+load_tls_env() ->
+    {ok, _} = application:ensure_all_started(ssl),
+    #{server_config := Server} = public_key:pkix_test_data(#{
+        server_chain => #{root => [], intermediates => [], peer => []},
+        client_chain => #{root => [], intermediates => [], peer => []}
+    }),
+    SslOptions = maps:with([cert, key], maps:from_list(Server)),
+    test_app_env:load(0, #{use_ssl => true, ssl_port => 0, ssl_options => SslOptions}).
+
+-spec stop_all([atom()]) -> ok.
+stop_all(Apps) ->
+    _ = [application:stop(A) || A <- lists:reverse(Apps), is_atom(A)],
+    ok.
 
 load_library_app(App) ->
     case

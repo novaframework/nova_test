@@ -124,7 +124,7 @@ the application started but its listener did not (Nova only logs
 "Cowboy could not start" when the port is taken). A TLS listener raises
 `{nova_test_tls_not_supported, #{app, port}}`: the HTTP helpers only speak
 plain HTTP. In these cases the applications started by this call are stopped
-again before raising.
+again before raising; an application that was already running is left alone.
 """.
 -spec start(App :: atom(), Config :: config()) -> config().
 start(App, Config) ->
@@ -134,10 +134,10 @@ start(App, Config) ->
         {ok, Port} ->
             [{nova_test_port, Port}, {nova_test_app, App}, {nova_test_started, Started} | Config];
         {tls, Port} ->
-            stop_apps(App, Started),
+            abort_start(App, Started),
             erlang:error({nova_test_tls_not_supported, #{app => App, port => Port}});
         {error, Reason} ->
-            stop_apps(App, Started),
+            abort_start(App, Started),
             erlang:error(
                 {nova_test_listener_not_running, #{
                     app => App,
@@ -468,6 +468,13 @@ check_path([$/ | _]) ->
     ok;
 check_path(Path) ->
     erlang:error({nova_test_invalid_path, #{path => Path, reason => ~"path must start with /"}}).
+
+-spec abort_start(atom(), [atom()]) -> ok.
+abort_start(App, Started) ->
+    case lists:member(App, Started) of
+        true -> stop_apps(App, Started);
+        false -> stop_unneeded(Started)
+    end.
 
 -spec stop_apps(atom(), [atom()]) -> ok.
 stop_apps(App, Started) ->
