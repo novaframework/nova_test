@@ -48,8 +48,17 @@ the HTTP listener actually bound from Ranch, so `#{port => 0}` in `cowboy_config
 works. If the listener is not running (Nova only logs "Cowboy could not start" when the
 port is taken), `start` stops what it started and raises
 `{nova_test_listener_not_running, #{app := App, reason := Reason, configured_port := Port}}`
-instead of letting the tests talk to whatever owns the port. `nova_test:stop/1` stops the
-application and the dependencies `start` started, so the next suite gets a fresh listener.
+instead of letting the tests talk to whatever owns the port.
+
+Only plain HTTP listeners are supported. With `use_ssl => true` in
+`cowboy_configuration`, `start` stops what it started and raises
+`{nova_test_tls_not_supported, #{app := App, port := Port}}`; test against a plain HTTP
+listener (for example a test profile without `use_ssl`).
+
+Call `nova_test:stop/1` last: it stops the application and the dependencies `start`
+started (nova, cowboy, ranch and any others), so the next suite gets a fresh listener. A
+dependency stays running while another running application still lists it in its
+`applications`, so `start(a)`, `start(b)`, `stop(a)` keeps the listener `b` uses.
 
 ### Request Options
 
@@ -70,9 +79,14 @@ application and the dependencies `start` started, so the next suite gets a fresh
 ### JSON
 
 `json` request bodies, `nova_test:json/1`, `nova_test_req:with_json/2` and the WebSocket
-JSON helpers use the `json_lib` configured for the Nova bootstrap application (the same
-key Nova reads). When none is configured, for example in EUnit without a running app,
-they use OTP's `json` module. A `json_lib` module may return `{ok, Term}` or the term
+JSON helpers go through `nova_json` when the Nova in use has it. Otherwise they read
+`json_lib` in the same order Nova does: the bootstrap application's environment, then
+`nova`'s. When neither sets it, for example in EUnit without a running app, they use OTP's
+`json` module.
+
+Nova itself (0.18.x) defaults to thoas when `json_lib` is unset, so a running app and
+nova_test can then use different libraries. Set `json_lib` explicitly if that matters.
+Decode failures raise `{json_decode_failed, Reason}`. A `json_lib` module may return `{ok, Term}` or the term
 itself from `decode/1`.
 
 ### Cookie Management
@@ -92,12 +106,19 @@ removed.
 
 ### Sessions and CSRF
 
-`nova_test:session/1` attaches a cookie jar to the Config. Every request made with it
-sends the jar's cookies and stores the cookies the response sets, like a browser, so
-Nova sessions and `nova_csrf_plugin` form flows work without calling `save_cookies/2`.
-`nova_test:csrf_token/1` reads the token from the page's hidden `_csrf_token` input
-(or `<meta name="csrf-token">`, or an `x-csrf-token` response header);
-`csrf_token/2` takes another field name.
+`nova_test:session/1` attaches a cookie jar to the Config. Every request made with it,
+including `nova_test_ws:connect/2,3`, sends the jar's cookies that match the request path
+and stores the cookies the response sets, like a browser. Nova sessions and
+`nova_csrf_plugin` form flows then work without calling `save_cookies/2`. The jar keys
+cookies on name and `Path` (RFC 6265 path matching and default path); `Domain`, `Secure`
+and `HttpOnly` are ignored, since every request goes to the application under test.
+`nova_test:cookie_header/2` returns the `cookie` header for a path, for use with another
+client.
+
+`nova_test:csrf_token/1` follows `nova_csrf_plugin`'s conventions: it reads the
+`value` of the page's `<input name="_csrf_token">`, and otherwise the `x-csrf-token`
+response header. If you changed the plugin's `field_name` or `header_name`, pass them:
+`nova_test:csrf_token(#{field => <<"csrf">>, header => "x-xsrf-token"}, Resp)`.
 
 ```erlang
 log_in_test(Config) ->
@@ -113,8 +134,10 @@ log_in_test(Config) ->
     ?assertStatus(200, Page).
 ```
 
-Call `session/1` once per simulated client. The jar is an ETS table owned by the calling
-process: create it in the test case or `init_per_testcase/2`, not in `init_per_suite/1`.
+Call `session/1` once per simulated client and use each jar from one process at a time.
+The jar is an ETS table owned by the calling process: create it in the test case or
+`init_per_testcase/2`, not in `init_per_suite/1` or `init_per_group/2`, whose processes
+exit before the test cases run.
 
 ### Debugging
 
@@ -135,6 +158,9 @@ ok = nova_test_ws:send_json(#{<<"action">> => <<"ping">>}, Conn),
 ok = nova_test_ws:close(Conn).
 ```
 
+The upgrade request carries the cookies the Config holds for that path, so a WebSocket
+behind a session login works with `Session = nova_test:session(Config)`.
+
 ## Unit Tests (Mock Requests)
 
 Build mock Cowboy requests to test controllers directly without HTTP. The builders fill
@@ -151,7 +177,8 @@ Result = my_controller:create(Req2),
 ### Available Builders
 
 - `new/2` - create a request with method and path
-- `with_json/2` - set JSON body and content-type, and `json` (as `decode_json_body` does)
+- `with_json/2` - set JSON body and content-type, and `json` decoded from that body (as
+  `decode_json_body` does, so keys are binaries)
 - `with_form/2` - set a form-urlencoded body and `params` (as `read_urlencoded_body` does)
 - `with_body/2` - set raw body (not parsed)
 - `with_header/3` - add a header
