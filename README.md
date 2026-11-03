@@ -121,6 +121,21 @@ and `HttpOnly` are ignored, since every request goes to the application under te
 `nova_test:cookie_header/2` returns the `cookie` header for a path, for use with another
 client.
 
+To assert cookie attributes, read them from the response with `nova_test:set_cookies/1`.
+It returns every `Set-Cookie` header (`nova_test:header/2` returns only the first) as
+`#{name, value, attributes}`, with lowercased attribute names and `<<>>` for flags:
+
+```erlang
+session_cookie_flags_test(Config) ->
+    Session = nova_test:session(Config),
+    {ok, Resp} = nova_test:get("/login", Session),
+    [#{attributes := Attrs}] =
+        [C || #{name := <<"session_id">>} = C <- nova_test:set_cookies(Resp)],
+    ?assert(lists:keymember(<<"httponly">>, 1, Attrs)),
+    ?assert(lists:keymember(<<"secure">>, 1, Attrs)),
+    ?assertEqual({<<"samesite">>, <<"Lax">>}, lists:keyfind(<<"samesite">>, 1, Attrs)).
+```
+
 `nova_test:csrf_token/1` follows `nova_csrf_plugin`'s conventions: it reads the
 `value` of the page's `<input name="_csrf_token">`, and otherwise the `x-csrf-token`
 response header. If you changed the plugin's `field_name` or `header_name`, pass them:

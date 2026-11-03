@@ -488,3 +488,46 @@ invalid_path_test_() ->
             {nova_test_invalid_path, #{path := ""}}, nova_test:request(delete, "", #{}, Config)
         )
     ].
+
+%% set_cookies/1
+
+set_cookies_attributes_test() ->
+    Resp = #{
+        status => 200,
+        headers => [
+            {"content-type", "text/html"},
+            {"Set-Cookie", "session_id=abc; Path=/; HttpOnly; Secure; SameSite=Lax"},
+            {"set-cookie", "theme=dark; Max-Age=60"},
+            {"set-cookie", "=broken"}
+        ],
+        body => <<>>
+    },
+    ?assertEqual(
+        [
+            #{
+                name => ~"session_id",
+                value => ~"abc",
+                attributes => [
+                    {~"path", ~"/"}, {~"httponly", <<>>}, {~"secure", <<>>}, {~"samesite", ~"Lax"}
+                ]
+            },
+            #{name => ~"theme", value => ~"dark", attributes => [{~"max-age", ~"60"}]}
+        ],
+        nova_test:set_cookies(Resp)
+    ).
+
+set_cookies_none_test() ->
+    ?assertEqual([], nova_test:set_cookies(#{status => 200, headers => [], body => <<>>})).
+
+%% Non-ASCII cookie bytes (httpc returns header values as byte lists)
+
+cookie_bytes_not_reencoded_test() ->
+    ?assertEqual(
+        {~"s", <<195, 169>>, active, undefined}, nova_test:parse_set_cookie([$s, $=, 195, 169])
+    ),
+    ?assertEqual(
+        {~"s", <<195, 133>>, active, undefined}, nova_test:parse_set_cookie([$s, $=, 195, 133])
+    ),
+    Resp = #{status => 200, headers => [{"set-cookie", [$s, $=, 195, 169]}], body => <<>>},
+    ?assertEqual(<<195, 169>>, nova_test:cookie(~"s", nova_test:save_cookies(Resp, []))),
+    ?assertMatch([#{value := <<195, 169>>}], nova_test:set_cookies(Resp)).

@@ -55,6 +55,7 @@ module when neither sets it.
     csrf_token/1,
     csrf_token/2,
     cookie_header/2,
+    set_cookies/1,
     enable_logging/1,
     disable_logging/1,
     build_multipart_body/2,
@@ -62,7 +63,14 @@ module when neither sets it.
 ]).
 
 -export_type([
-    response/0, opts/0, multipart_field/0, form_fields/0, config/0, method/0, csrf_opts/0
+    response/0,
+    opts/0,
+    multipart_field/0,
+    form_fields/0,
+    config/0,
+    method/0,
+    csrf_opts/0,
+    set_cookie/0
 ]).
 
 -ifdef(TEST).
@@ -94,6 +102,12 @@ module when neither sets it.
     | {file, Name :: binary(), Filename :: binary(), ContentType :: binary(), Data :: binary()}.
 
 -type csrf_opts() :: #{field => binary(), header => string()}.
+
+-type set_cookie() :: #{
+    name := binary(),
+    value := binary(),
+    attributes := [{binary(), binary()}]
+}.
 
 -type form_value() :: binary() | string() | atom() | integer().
 -type form_fields() :: #{form_value() => form_value()} | [{form_value(), form_value()}].
@@ -369,6 +383,32 @@ cookie_header(Path, Config) ->
     end.
 
 -doc """
+Every `Set-Cookie` header of `Response`, in order, with its attributes.
+
+Attribute names are lowercased; flags such as `HttpOnly` have the value
+`<<>>`. Use it to assert attributes the cookie jar ignores:
+
+```erlang
+{ok, Resp} = nova_test:get("/login", Session),
+[#{attributes := Attrs}] =
+    [C || #{name := <<"session_id">>} = C <- nova_test:set_cookies(Resp)],
+?assert(lists:keymember(<<"httponly">>, 1, Attrs)),
+?assert(lists:keymember(<<"secure">>, 1, Attrs)),
+?assertEqual({<<"samesite">>, <<"Lax">>}, lists:keyfind(<<"samesite">>, 1, Attrs)).
+```
+
+Malformed headers (no `=` in the first pair) are skipped.
+""".
+-spec set_cookies(response()) -> [set_cookie()].
+set_cookies(#{headers := Headers}) ->
+    [
+        #{name => Name, value => Value, attributes => Attributes}
+     || {Key, CookieStr} <- Headers,
+        string:lowercase(Key) =:= "set-cookie",
+        {Name, Value, Attributes} <- [split_set_cookie(CookieStr)]
+    ].
+
+-doc """
 Attach a new cookie jar to `Config`.
 
 Every request made with the returned Config sends the jar's cookies that
@@ -376,8 +416,8 @@ match the request path and stores the cookies set by the response, like a
 browser would, so session and CSRF flows work without `save_cookies/2`.
 Cookies are keyed on name and `Path` (cookies without `Path` get the default
 path of the request, as in RFC 6265); `Domain`, `Secure` and `HttpOnly` are
-ignored, since every request goes to the one application under test.
-`cookies/1`, `cookie/2`, `set_cookie/3` and `clear_cookies/1` read and write
+ignored, since every request goes to the one application under test; use
+`set_cookies/1` to assert them. `cookies/1`, `cookie/2`, `set_cookie/3` and `clear_cookies/1` read and write
 the jar. The jar starts with the cookies `Config` already holds, for path
 `/`.
 
@@ -672,16 +712,24 @@ merge_set_cookies([{Key, Value} | Rest], Cookies) ->
 -spec parse_set_cookie(string()) ->
     {binary(), binary(), active | expired, binary() | undefined} | error.
 parse_set_cookie(CookieStr) ->
-    [NameValue | Attributes] = string:split(CookieStr, ";", all),
-    case string:split(string:trim(NameValue), "=") of
-        [Name, Value] when Name =/= "" ->
-            Parsed = [cookie_attribute(A) || A <- Attributes],
+    case split_set_cookie(CookieStr) of
+        {Name, Value, Attributes} ->
             Path =
-                case [P || {~"path", P} <- Parsed] of
+                case [P || {~"path", P} <- Attributes] of
                     [P | _] -> P;
                     [] -> undefined
                 end,
-            {trimmed_binary(Name), trimmed_binary(Value), expiry(Parsed), Path};
+            {Name, Value, expiry(Attributes), Path};
+        error ->
+            error
+    end.
+
+-spec split_set_cookie(string()) -> {binary(), binary(), [{binary(), binary()}]} | error.
+split_set_cookie(CookieStr) ->
+    [NameValue | Attributes] = string:split(CookieStr, ";", all),
+    case string:split(trim_ows(NameValue), "=") of
+        [Name, Value] when Name =/= "" ->
+            {header_bytes(Name), header_bytes(Value), [cookie_attribute(A) || A <- Attributes]};
         _ ->
             error
     end.
@@ -693,11 +741,25 @@ trimmed_binary(String) ->
         _ -> erlang:error({invalid_cookie, String})
     end.
 
+%% httpc header values are byte lists, so each element is one byte. Only
+%% SP and HTAB are trimmed: string:trim/1 would also strip byte 16#85, which
+%% ends UTF-8 sequences such as the one for "Å".
+-spec header_bytes(unicode:chardata()) -> binary().
+header_bytes(Bytes) ->
+    case unicode:characters_to_binary(trim_ows(Bytes), latin1, latin1) of
+        Binary when is_binary(Binary) -> Binary;
+        _ -> erlang:error({invalid_cookie, Bytes})
+    end.
+
+-spec trim_ows(unicode:chardata()) -> unicode:chardata().
+trim_ows(Bytes) ->
+    string:trim(Bytes, both, " \t").
+
 -spec cookie_attribute(unicode:chardata()) -> {binary(), binary()}.
 cookie_attribute(Attribute) ->
-    case string:split(string:trim(Attribute), "=") of
-        [Name, Value] -> {trimmed_binary(string:lowercase(Name)), trimmed_binary(Value)};
-        [Name | _] -> {trimmed_binary(string:lowercase(Name)), <<>>}
+    case string:split(trim_ows(Attribute), "=") of
+        [Name, Value] -> {header_bytes(string:lowercase(Name)), header_bytes(Value)};
+        [Name | _] -> {header_bytes(string:lowercase(Name)), <<>>}
     end.
 
 %% Max-Age wins over Expires (RFC 6265, section 5.3).
