@@ -47,6 +47,8 @@ routes(_Env) ->
             {"/test/headers", fun test_controller:get_headers/1, #{methods => [get]}},
             {"/test/set-cookie", fun test_controller:set_cookie/1, #{methods => [get]}},
             {"/test/get-cookie", fun test_controller:get_cookie/1, #{methods => [get]}},
-            {"/test/ws", test_ws_handler, #{protocol => ws}}
+            {"/test/ws", test_ws_handler, #{protocol => ws}},
+            {"/test/login", fun test_controller:log_in/1, #{methods => [get]}},
+            {"/test/ws-auth", test_ws_auth_handler, #{protocol => ws}}
         ]
     }].

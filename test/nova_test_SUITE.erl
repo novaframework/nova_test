@@ -90,7 +90,9 @@
     form_post_test/1,
     csrf_session_flow_test/1,
     csrf_without_session_rejected_test/1,
-    session_cookie_deleted_test/1
+    session_cookie_deleted_test/1,
+    ws_session_auth_test/1,
+    ws_without_session_rejected_test/1
 ]).
 
 all() ->
@@ -170,7 +172,9 @@ groups() ->
             form_post_test,
             csrf_session_flow_test,
             csrf_without_session_rejected_test,
-            session_cookie_deleted_test
+            session_cookie_deleted_test,
+            ws_session_auth_test,
+            ws_without_session_rejected_test
         ]}
     ].
 
@@ -525,3 +529,15 @@ session_cookie_deleted_test(Config) ->
     ),
     ?assertStatus(204, Resp),
     ?assertEqual(undefined, nova_test:cookie(<<"session_id">>, Session)).
+
+ws_session_auth_test(Config) ->
+    Session = nova_test:session(Config),
+    {ok, Resp} = nova_test:get("/test/login", Session),
+    ?assertStatus(204, Resp),
+    {ok, Conn} = nova_test_ws:connect("/test/ws-auth", Session),
+    ok = nova_test_ws:send_text(<<"whoami">>, Conn),
+    ?assertWsRecv(<<"alice">>, Conn),
+    ok = nova_test_ws:close(Conn).
+
+ws_without_session_rejected_test(Config) ->
+    ?assertMatch({error, {upgrade_failed, _}}, nova_test_ws:connect("/test/ws-auth", Config)).

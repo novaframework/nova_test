@@ -10,6 +10,9 @@ ok = nova_test_ws:send_json(#{<<"action">> => <<"ping">>}, Conn),
 {ok, Data} = nova_test_ws:recv_json(Conn),
 ok = nova_test_ws:close(Conn).
 ```
+
+The upgrade request carries the cookies `Config` holds for `Path` (see
+`nova_test:session/1`), so a WebSocket behind a session login works.
 """.
 
 -export([
@@ -61,7 +64,7 @@ connect(Path, Opts, Config) ->
     {ok, GunPid} = gun:open("localhost", Port, #{protocols => [http]}),
     case gun:await_up(GunPid, 5000) of
         {ok, _Protocol} ->
-            Headers = maps:get(headers, Opts, []),
+            Headers = maps:get(headers, Opts, []) ++ nova_test:cookie_header(Path, Config),
             StreamRef = gun:ws_upgrade(GunPid, Path, Headers),
             MonRef = monitor(process, GunPid),
             receive

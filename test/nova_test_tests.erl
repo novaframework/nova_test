@@ -147,21 +147,18 @@ build_request_body_default_ct_test() ->
     Result = nova_test:build_request("http://localhost/x", [], #{body => <<"x">>}),
     ?assertMatch({"http://localhost/x", [], "text/plain", _}, Result).
 
-%% Internal: cookie_header
+%% cookie_header/2
 
 cookie_header_empty_test() ->
-    ?assertEqual([], nova_test:cookie_header([])).
+    ?assertEqual([], nova_test:cookie_header("/", [])).
 
 cookie_header_with_cookies_test() ->
     Config = nova_test:set_cookie(<<"session">>, <<"abc">>, []),
-    [{"cookie", CookieStr}] = nova_test:cookie_header(Config),
-    ?assert(is_list(CookieStr)),
-    ?assertNotEqual("", CookieStr).
+    ?assertEqual([{<<"cookie">>, <<"session=abc">>}], nova_test:cookie_header("/x", Config)).
 
 cookie_header_format_test() ->
-    Config = [{nova_test_cookies, #{<<"a">> => <<"1">>}}],
-    [{"cookie", CookieStr}] = nova_test:cookie_header(Config),
-    ?assertEqual("a=1", CookieStr).
+    Config = [{nova_test_cookies, #{<<"a">> => <<"1">>, <<"b">> => <<"2">>}}],
+    ?assertEqual([{<<"cookie">>, <<"a=1; b=2">>}], nova_test:cookie_header("/", Config)).
 
 %% Internal: merge_set_cookies
 
@@ -195,11 +192,14 @@ merge_set_cookies_malformed_test() ->
 %% Internal: parse_set_cookie
 
 parse_set_cookie_simple_test() ->
-    ?assertEqual({<<"name">>, <<"val">>, active}, nova_test:parse_set_cookie("name=val")).
+    ?assertEqual(
+        {<<"name">>, <<"val">>, active, undefined}, nova_test:parse_set_cookie("name=val")
+    ).
 
 parse_set_cookie_with_attrs_test() ->
     ?assertEqual(
-        {<<"sid">>, <<"abc">>, active}, nova_test:parse_set_cookie("sid=abc; Path=/; HttpOnly")
+        {<<"sid">>, <<"abc">>, active, <<"/">>},
+        nova_test:parse_set_cookie("sid=abc; Path=/; HttpOnly")
     ).
 
 parse_set_cookie_malformed_test() ->
@@ -303,10 +303,10 @@ save_cookies_future_expires_kept_test() ->
 
 max_age_wins_over_expires_test() ->
     Cookie = "sid=abc; Max-Age=60; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-    ?assertEqual({~"sid", ~"abc", active}, nova_test:parse_set_cookie(Cookie)).
+    ?assertEqual({~"sid", ~"abc", active, undefined}, nova_test:parse_set_cookie(Cookie)).
 
 cookie_value_with_equals_test() ->
-    ?assertEqual({~"t", ~"YWJj==", active}, nova_test:parse_set_cookie("t=YWJj==; Path=/")).
+    ?assertEqual({~"t", ~"YWJj==", active, ~"/"}, nova_test:parse_set_cookie("t=YWJj==; Path=/")).
 
 %% Sessions
 
@@ -315,7 +315,7 @@ session_carries_cookies_test() ->
     Resp = #{status => 200, headers => [{"set-cookie", "sid=abc"}], body => <<>>},
     ?assertEqual(Session, nova_test:save_cookies(Resp, Session)),
     ?assertEqual(~"abc", nova_test:cookie(~"sid", Session)),
-    ?assertEqual([{"cookie", "sid=abc"}], nova_test:cookie_header(Session)).
+    ?assertEqual([{~"cookie", ~"sid=abc"}], nova_test:cookie_header("/", Session)).
 
 session_starts_with_config_cookies_test() ->
     Config = nova_test:set_cookie(~"a", ~"1", []),
@@ -362,11 +362,24 @@ csrf_token_unescapes_html_test() ->
 
 csrf_token_custom_field_test() ->
     Html = ~"<input name=\"_csrf_token\" value=\"no\"><input name=\"csrf\" value=\"yes\">",
-    ?assertEqual(~"yes", nova_test:csrf_token(~"csrf", Html)).
+    ?assertEqual(~"yes", nova_test:csrf_token(#{field => ~"csrf"}, Html)).
 
-csrf_token_from_meta_test() ->
+csrf_token_ignores_meta_test() ->
     Html = ~"<head><meta name=\"csrf-token\" content=\"meta-tok\"></head>",
-    ?assertEqual(~"meta-tok", nova_test:csrf_token(Html)).
+    ?assertEqual(undefined, nova_test:csrf_token(Html)).
+
+csrf_token_custom_header_test() ->
+    Resp = #{status => 200, headers => [{"x-xsrf-token", "h"}], body => ~"{}"},
+    ?assertEqual(undefined, nova_test:csrf_token(Resp)),
+    ?assertEqual(~"h", nova_test:csrf_token(#{header => "x-xsrf-token"}, Resp)).
+
+csrf_token_form_before_header_test() ->
+    Resp = #{
+        status => 200,
+        headers => [{"x-csrf-token", "hdr"}],
+        body => ~"<input name=\"_csrf_token\" value=\"form\">"
+    },
+    ?assertEqual(~"form", nova_test:csrf_token(Resp)).
 
 csrf_token_from_header_test() ->
     Resp = #{status => 200, headers => [{"x-csrf-token", "hdr-tok"}], body => ~"{}"},
@@ -400,3 +413,59 @@ start_unknown_app_test() ->
         {nova_test_start_failed, #{app := nova_test_no_such_app}},
         nova_test:start(nova_test_no_such_app)
     ).
+
+%% Session cookie paths (RFC 6265)
+
+default_path_test_() ->
+    [
+        ?_assertEqual(~"/", nova_test:default_path(~"/")),
+        ?_assertEqual(~"/", nova_test:default_path(~"/login")),
+        ?_assertEqual(~"/admin", nova_test:default_path(~"/admin/users")),
+        ?_assertEqual(~"/admin", nova_test:default_path(~"/admin/")),
+        ?_assertEqual(~"/", nova_test:default_path(~""))
+    ].
+
+path_match_test_() ->
+    [
+        ?_assert(nova_test:path_match(~"/admin", ~"/admin")),
+        ?_assert(nova_test:path_match(~"/admin/users", ~"/admin")),
+        ?_assert(nova_test:path_match(~"/admin/users", ~"/")),
+        ?_assert(nova_test:path_match(~"/admin/users", ~"/admin/")),
+        ?_assertNot(nova_test:path_match(~"/administrator", ~"/admin")),
+        ?_assertNot(nova_test:path_match(~"/", ~"/admin"))
+    ].
+
+session_respects_cookie_path_test() ->
+    Session = nova_test:session([]),
+    Resp = #{
+        status => 200,
+        headers => [{"set-cookie", "admin=1; Path=/admin"}, {"set-cookie", "all=2; Path=/"}],
+        body => <<>>
+    },
+    _ = nova_test:save_cookies(Resp, Session),
+    ?assertEqual([{~"cookie", ~"all=2"}], nova_test:cookie_header("/posts", Session)),
+    ?assertEqual(
+        [{~"cookie", ~"admin=1; all=2"}], nova_test:cookie_header("/admin/users?x=1", Session)
+    ).
+
+session_same_name_different_paths_test() ->
+    Session = nova_test:session([]),
+    Resp = #{
+        status => 200,
+        headers => [{"set-cookie", "t=root; Path=/"}, {"set-cookie", "t=admin; Path=/admin"}],
+        body => <<>>
+    },
+    _ = nova_test:save_cookies(Resp, Session),
+    ?assertEqual([{~"cookie", ~"t=admin; t=root"}], nova_test:cookie_header("/admin/x", Session)),
+    ?assertEqual(~"admin", nova_test:cookie(~"t", Session)),
+    Expire = #{
+        status => 200, headers => [{"set-cookie", "t=; Path=/admin; Max-Age=0"}], body => <<>>
+    },
+    _ = nova_test:save_cookies(Expire, Session),
+    ?assertEqual([{~"cookie", ~"t=root"}], nova_test:cookie_header("/admin/x", Session)).
+
+session_response_updates_only_named_cookies_test() ->
+    Session = nova_test:set_cookie(~"keep", ~"1", nova_test:session([])),
+    Resp = #{status => 200, headers => [{"set-cookie", "new=2"}], body => <<>>},
+    _ = nova_test:save_cookies(Resp, Session),
+    ?assertEqual(#{~"keep" => ~"1", ~"new" => ~"2"}, nova_test:cookies(Session)).

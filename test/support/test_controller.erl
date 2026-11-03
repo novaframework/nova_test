@@ -13,7 +13,8 @@
     echo_query/1,
     csrf_form/1,
     csrf_submit/1,
-    log_out/1
+    log_out/1,
+    log_in/1
 ]).
 
 get_json(_Req) ->
@@ -65,6 +66,10 @@ csrf_submit(#{params := Params}) ->
 log_out(Req) ->
     {ok, Req1} = nova_session:delete(Req),
     {status, 204, #{}, <<>>, Req1}.
+
+log_in(Req) ->
+    ok = nova_session:set(Req, <<"user">>, <<"alice">>),
+    {status, 204}.
 
 %% Internal
 
