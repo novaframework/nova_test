@@ -9,19 +9,29 @@ encode(Term) ->
 decode(<<"custom:", Json/binary>>) ->
     {ok, #{~"decoded_by" => ~"custom", ~"value" => json:decode(Json)}}.
 
-defaults_to_otp_json_test() ->
-    ?assertEqual(json, nova_test_json:json_lib()).
+defaults_to_novas_thoas_test() ->
+    ?assertEqual(thoas, nova_test_json:json_lib()).
 
-works_without_thoas_test_() ->
+unset_json_lib_uses_thoas_test_() ->
     {setup, fun hide_thoas/0, fun restore_thoas/1, fun(_) ->
-        [
-            ?_assertEqual(#{~"ok" => true}, nova_test:json(response(~"{\"ok\":true}"))),
-            ?_assertMatch(
-                #{body := ~"{\"a\":1}"},
-                nova_test_req:with_json(#{a => 1}, nova_test_req:new(post, "/"))
-            )
-        ]
+        ?_assertError({json_decode_failed, _}, nova_test:json(response(~"{\"ok\":true}")))
     end}.
+
+configured_otp_json_works_without_thoas_test_() ->
+    {setup, fun() -> {hide_thoas(), use_json_lib(json)} end,
+        fun({Thoas, Previous}) ->
+            restore_json_lib(Previous),
+            restore_thoas(Thoas)
+        end,
+        fun(_) ->
+            [
+                ?_assertEqual(#{~"ok" => true}, nova_test:json(response(~"{\"ok\":true}"))),
+                ?_assertMatch(
+                    #{body := ~"{\"a\":1}"},
+                    nova_test_req:with_json(#{a => 1}, nova_test_req:new(post, "/"))
+                )
+            ]
+        end}.
 
 configured_json_lib_test_() ->
     {setup, fun use_custom_json_lib/0, fun restore_json_lib/1, fun(_) ->
@@ -40,7 +50,7 @@ decode_error_test_() ->
         ?_assertError({json_decode_failed, bad}, nova_test_json:decode(~"x"))
     end}.
 
-otp_json_decode_error_test() ->
+default_decode_error_test() ->
     ?assertError({json_decode_failed, _}, nova_test:json(response(~"{not json"))).
 
 nova_env_json_lib_test_() ->

@@ -35,7 +35,8 @@ decode(Data) ->
 
 -doc """
 The `json_lib` Nova would use when `nova_json` is not available: the
-bootstrap application's environment, then `nova`'s, then OTP `json`.
+bootstrap application's environment, then `nova`'s, then `thoas`, Nova's
+own default.
 """.
 -spec json_lib() -> module().
 json_lib() ->
@@ -45,7 +46,7 @@ json_lib() ->
         _ ->
             case application:get_env(nova, json_lib) of
                 {ok, Lib} when is_atom(Lib), Lib =/= undefined -> Lib;
-                _ -> json
+                _ -> thoas
             end
     end.
 

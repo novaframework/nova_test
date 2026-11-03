@@ -91,11 +91,9 @@ next `stop` stops it once nothing needs it, in either order.
 `json` request bodies, `nova_test:json/1`, `nova_test_req:with_json/2` and the WebSocket
 JSON helpers go through `nova_json` when the Nova in use has it. Otherwise they read
 `json_lib` in the same order Nova does: the bootstrap application's environment, then
-`nova`'s. When neither sets it, for example in EUnit without a running app, they use OTP's
-`json` module.
-
-Nova itself (0.18.x) defaults to thoas when `json_lib` is unset, so a running app and
-nova_test can then use different libraries. Set `json_lib` explicitly if that matters.
+`nova`'s. When neither sets it, for example in EUnit without a running app, they use
+thoas, the same default as Nova. Set `json_lib` (for example to OTP's `json`) to use
+another library in both.
 Decode failures raise `{json_decode_failed, Reason}`. A `json_lib` module may return `{ok, Term}` or the term
 itself from `decode/1`.
 

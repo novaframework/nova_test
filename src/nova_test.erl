@@ -24,8 +24,8 @@ CSRF token from a page, for form flows protected by `nova_csrf_plugin`.
 
 JSON bodies are encoded and decoded through `nova_json` when the running Nova
 has it. Otherwise nova_test reads `json_lib` the way Nova does (the bootstrap
-application's environment, then `nova`'s) and falls back to OTP's `json`
-module when neither sets it.
+application's environment, then `nova`'s) and falls back to `thoas`, Nova's
+own default, when neither sets it.
 """.
 
 -export([
