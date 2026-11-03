@@ -10,7 +10,7 @@ jobs:
       rebar3-version: '3.26.0'
       enable-ct: true
       enable-ex-doc: true
-      enable-dialyzer: false
+      enable-dialyzer: true
       enable-audit: true
       enable-sbom: true
       enable-sbom-scan: true

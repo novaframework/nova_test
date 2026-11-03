@@ -28,7 +28,16 @@ Result = my_controller:create(Req1),
     encode_qs/1
 ]).
 
--spec new(Method :: atom(), Path :: string() | binary()) -> cowboy_req:req().
+-export_type([req/0]).
+
+-doc """
+A mock request: a map with the keys a Nova controller reads from a
+`cowboy_req:req()`. It is not a full `cowboy_req:req()`: there is no
+connection, so `pid`, `streamid` and the other connection keys are missing.
+""".
+-type req() :: map().
+
+-spec new(Method :: atom(), Path :: string() | binary()) -> req().
 new(Method, Path) when is_list(Path) ->
     new(Method, list_to_binary(Path));
 new(Method, Path) ->
@@ -46,7 +55,7 @@ new(Method, Path) ->
         peer => {{127, 0, 0, 1}, 12345}
     }.
 
--spec with_bindings(Bindings :: map(), Req :: cowboy_req:req()) -> cowboy_req:req().
+-spec with_bindings(Bindings :: map(), Req :: req()) -> req().
 with_bindings(Bindings, Req) ->
     Req#{bindings => Bindings}.
 
@@ -56,7 +65,7 @@ Set a JSON body. `body` holds `Json` encoded with the configured `json_lib`
 again, the way `nova_request_plugin` with `decode_json_body` leaves it: keys
 are binaries even when `Json` used atoms.
 """.
--spec with_json(Json :: term(), Req :: cowboy_req:req()) -> cowboy_req:req().
+-spec with_json(Json :: term(), Req :: req()) -> req().
 with_json(Json, Req) ->
     Headers = maps:get(headers, Req, #{}),
     Body = nova_test_json:encode(Json),
@@ -66,12 +75,12 @@ with_json(Json, Req) ->
         headers => Headers#{~"content-type" => ~"application/json"}
     }.
 
--spec with_header(Name :: binary(), Value :: binary(), Req :: cowboy_req:req()) -> cowboy_req:req().
+-spec with_header(Name :: binary(), Value :: binary(), Req :: req()) -> req().
 with_header(Name, Value, Req) ->
     Headers = maps:get(headers, Req, #{}),
     Req#{headers => Headers#{Name => Value}}.
 
--spec with_auth_data(AuthData :: term(), Req :: cowboy_req:req()) -> cowboy_req:req().
+-spec with_auth_data(AuthData :: term(), Req :: req()) -> req().
 with_auth_data(AuthData, Req) ->
     Req#{auth_data => AuthData}.
 
@@ -81,14 +90,14 @@ parsed the way `nova_request_plugin` with `parse_qs => true` does: a map with
 binary keys and values, where the last of repeated keys wins. Pass a list of
 pairs to repeat a key. For `parse_qs => list`, use `cow_qs:parse_qs(maps:get(qs, Req))`.
 """.
--spec with_query(Params :: nova_test:form_fields(), Req :: cowboy_req:req()) ->
-    cowboy_req:req().
+-spec with_query(Params :: nova_test:form_fields(), Req :: req()) ->
+    req().
 with_query(Params, Req) ->
     QS = encode_qs(Params),
     Req#{qs => QS, parsed_qs => maps:from_list(cow_qs:parse_qs(QS))}.
 
 -doc "Set a raw body. The body is not parsed; see `with_json/2` and `with_form/2`.".
--spec with_body(Body :: binary(), Req :: cowboy_req:req()) -> cowboy_req:req().
+-spec with_body(Body :: binary(), Req :: req()) -> req().
 with_body(Body, Req) ->
     Req#{body => Body}.
 
@@ -97,8 +106,8 @@ Set an `application/x-www-form-urlencoded` body. `params` holds the fields
 parsed the way `nova_request_plugin` with `read_urlencoded_body => true`
 does: a map with binary keys and values.
 """.
--spec with_form(Fields :: nova_test:form_fields(), Req :: cowboy_req:req()) ->
-    cowboy_req:req().
+-spec with_form(Fields :: nova_test:form_fields(), Req :: req()) ->
+    req().
 with_form(Fields, Req) ->
     Body = encode_qs(Fields),
     Headers = maps:get(headers, Req, #{}),
@@ -108,13 +117,13 @@ with_form(Fields, Req) ->
         headers => Headers#{~"content-type" => ~"application/x-www-form-urlencoded"}
     }.
 
--spec with_peer(Peer :: {inet:ip_address(), inet:port_number()}, Req :: cowboy_req:req()) ->
-    cowboy_req:req().
+-spec with_peer(Peer :: {inet:ip_address(), inet:port_number()}, Req :: req()) ->
+    req().
 with_peer(Peer, Req) ->
     Req#{peer => Peer}.
 
--spec with_multipart(Fields :: [nova_test:multipart_field()], Req :: cowboy_req:req()) ->
-    cowboy_req:req().
+-spec with_multipart(Fields :: [nova_test:multipart_field()], Req :: req()) ->
+    req().
 with_multipart(Fields, Req) ->
     Boundary = <<"----nova_test_boundary">>,
     Body = iolist_to_binary(nova_test:build_multipart_body(Fields, Boundary)),
@@ -126,7 +135,7 @@ with_multipart(Fields, Req) ->
         multipart => Fields
     }.
 
--spec with_cookies(Cookies :: map(), Req :: cowboy_req:req()) -> cowboy_req:req().
+-spec with_cookies(Cookies :: map(), Req :: req()) -> req().
 with_cookies(Cookies, Req) ->
     CookieStr = maps:fold(
         fun(Name, Value, Acc) ->
