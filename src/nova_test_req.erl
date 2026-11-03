@@ -61,7 +61,7 @@ with_bindings(Bindings, Req) ->
 
 -doc """
 Set a JSON body. `body` holds `Json` encoded with the configured `json_lib`
-(OTP `json` when none is configured), and `json` holds that body decoded
+(thoas, Nova's default, when none is configured), and `json` holds that body decoded
 again, the way `nova_request_plugin` with `decode_json_body` leaves it: keys
 are binaries even when `Json` used atoms.
 """.
