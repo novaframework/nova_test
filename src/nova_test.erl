@@ -143,19 +143,22 @@ the application started but its listener did not (Nova only logs
 `{nova_test_tls_not_supported, #{app, port}}`: the HTTP helpers only speak
 plain HTTP. In these cases the applications started by this call are stopped
 again before raising; an application that was already running is left alone.
+
+The applications this call started, `inets` included, are kept in `Config`
+for `stop/1`.
 """.
 -spec start(App :: atom(), Config :: config()) -> config().
 start(App, Config) ->
-    _ = ensure_started(inets),
-    Started = ensure_started(App),
+    InetsStarted = ensure_started(inets, []),
+    Started = InetsStarted ++ ensure_started(App, InetsStarted),
     case listener_port(App) of
         {ok, Port} ->
             [{nova_test_port, Port}, {nova_test_app, App}, {nova_test_started, Started} | Config];
         {tls, Port} ->
-            abort_start(App, Started),
+            stop_started(Started),
             erlang:error({nova_test_tls_not_supported, #{app => App, port => Port}});
         {error, Reason} ->
-            abort_start(App, Started),
+            stop_started(Started),
             erlang:error(
                 {nova_test_listener_not_running, #{
                     app => App,
@@ -166,26 +169,19 @@ start(App, Config) ->
     end.
 
 -doc """
-Stop the application started by `start/1,2`, and the dependencies that call
-started (nova, cowboy, ranch and any others), so the next `start/1,2` gets a
+Stop exactly the applications that `start/1,2` started, in reverse start
+order: the application itself, then the dependencies that call started
+(nova, cowboy, ranch, inets and any others), so the next `start/1,2` gets a
 fresh listener. Call it last, after the tests that use the application.
 
-A dependency is left running while another running application still lists
-it in its `applications`, so `start(a)`, `start(b)`, `stop(a)` keeps the
-listener `b` uses. Such a dependency is remembered and stopped by a later
-`stop/1` once nothing running needs it, so both `stop(a)`, `stop(b)` and
-`stop(b)`, `stop(a)` leave nova, cowboy and ranch stopped.
+Applications that were already running before `start/1,2`, the application
+itself included, are left running. When two `start/1,2` calls share
+dependencies, the first call started them, so stop the second one first.
 """.
 -spec stop(Config :: config()) -> ok.
 stop(Config) ->
-    App = proplists:get_value(nova_test_app, Config),
-    Started =
-        case proplists:get_value(nova_test_started, Config, []) of
-            Apps when is_list(Apps) -> [A || A <- Apps, is_atom(A)];
-            _ -> []
-        end,
-    case App of
-        A when is_atom(A) -> stop_apps(A, Started);
+    case proplists:get_value(nova_test_started, Config, []) of
+        Apps when is_list(Apps) -> stop_started([A || A <- Apps, is_atom(A)]);
         _ -> ok
     end.
 
@@ -557,11 +553,14 @@ build_multipart_body(Fields, Boundary) ->
 
 %% Internal
 
--spec ensure_started(atom()) -> [atom()].
-ensure_started(App) ->
+-spec ensure_started(atom(), [atom()]) -> [atom()].
+ensure_started(App, StartedBefore) ->
     case application:ensure_all_started(App) of
-        {ok, Started} -> Started;
-        {error, Reason} -> erlang:error({nova_test_start_failed, #{app => App, reason => Reason}})
+        {ok, Started} ->
+            Started;
+        {error, Reason} ->
+            stop_started(StartedBefore),
+            erlang:error({nova_test_start_failed, #{app => App, reason => Reason}})
     end.
 
 -doc false.
@@ -571,54 +570,13 @@ check_path([$/ | _]) ->
 check_path(Path) ->
     erlang:error({nova_test_invalid_path, #{path => Path, reason => ~"path must start with /"}}).
 
--spec abort_start(atom(), [atom()]) -> ok.
-abort_start(App, Started) ->
-    case lists:member(App, Started) of
-        true -> stop_apps(App, Started);
-        false -> release(Started)
-    end.
-
--spec stop_apps(atom(), [atom()]) -> ok.
-stop_apps(App, Started) ->
+-spec stop_started([atom()]) -> ok.
+stop_started([]) ->
+    ok;
+stop_started([App | Rest]) ->
+    ok = stop_started(Rest),
     _ = application:stop(App),
-    release([A || A <- Started, A =/= App]).
-
-%% Dependencies still needed by another running application are held back
-%% and retried by the next stop, so the order of stop/1 calls does not matter.
--spec release([atom()]) -> ok.
-release(Apps) ->
-    Candidates = [A || A <- lists:usort(Apps ++ held_back()), is_atom(A)],
-    Kept = stop_unneeded(Candidates),
-    Running = [A || {A, _, _} <- application:which_applications()],
-    application:set_env(nova_test, held_back, [A || A <- Kept, lists:member(A, Running)]).
-
--spec held_back() -> [atom()].
-held_back() ->
-    case application:get_env(nova_test, held_back, []) of
-        Apps when is_list(Apps) -> [A || A <- Apps, is_atom(A)];
-        _ -> []
-    end.
-
--spec stop_unneeded([atom()]) -> [atom()].
-stop_unneeded([]) ->
-    [];
-stop_unneeded(Apps) ->
-    Running = [A || {A, _, _} <- application:which_applications()],
-    Needed = [D || R <- Running, D <- dependencies(R)],
-    case [A || A <- Apps, not lists:member(A, Needed)] of
-        [] ->
-            Apps;
-        Free ->
-            _ = [application:stop(A) || A <- Free],
-            stop_unneeded([A || A <- Apps, not lists:member(A, Free)])
-    end.
-
--spec dependencies(atom()) -> [atom()].
-dependencies(App) ->
-    case application:get_key(App, applications) of
-        {ok, Apps} when is_list(Apps) -> [A || A <- Apps, is_atom(A)];
-        _ -> []
-    end.
+    ok.
 
 listener_port(App) ->
     case listener_ref(App) of

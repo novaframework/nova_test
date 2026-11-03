@@ -64,11 +64,11 @@ Only plain HTTP listeners are supported. With `use_ssl => true` in
 `{nova_test_tls_not_supported, #{app := App, port := Port}}`; test against a plain HTTP
 listener (for example a test profile without `use_ssl`).
 
-Call `nova_test:stop/1` last: it stops the application and the dependencies `start`
-started (nova, cowboy, ranch and any others), so the next suite gets a fresh listener. A
-dependency stays running while another running application still lists it in its
-`applications`, so `start(a)`, `start(b)`, `stop(a)` keeps the listener `b` uses. The
-next `stop` stops it once nothing needs it, in either order.
+Call `nova_test:stop/1` last: it stops exactly the applications `start` started, in
+reverse start order (the application, then nova, cowboy, ranch, inets and any other
+dependency that call started), so the next suite gets a fresh listener. Applications
+that were already running before `start` are left running. When two `start` calls
+share dependencies, the first call started them, so stop the second one first.
 
 ### Request Options
 

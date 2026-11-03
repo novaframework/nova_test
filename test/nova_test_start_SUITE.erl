@@ -7,7 +7,8 @@
     port_in_use_fails_test/1,
     bound_port_is_used_test/1,
     tls_listener_fails_test/1,
-    second_app_keeps_listener_test/1,
+    stop_stops_what_start_started_test/1,
+    already_running_apps_survive_stop_test/1,
     stop_in_start_order_test/1,
     stop_in_reverse_order_test/1,
     running_app_kept_when_listener_missing_test/1,
@@ -19,7 +20,8 @@ all() ->
         port_in_use_fails_test,
         bound_port_is_used_test,
         tls_listener_fails_test,
-        second_app_keeps_listener_test,
+        stop_stops_what_start_started_test,
+        already_running_apps_survive_stop_test,
         stop_in_start_order_test,
         stop_in_reverse_order_test,
         running_app_kept_when_listener_missing_test,
@@ -60,24 +62,32 @@ tls_listener_fails_test(Config) ->
     ),
     ?assertNot(lists:keymember(nova, 1, application:which_applications())).
 
-second_app_keeps_listener_test(Config0) ->
+stop_stops_what_start_started_test(Config0) ->
+    ok = test_app_env:load(0),
+    Config = nova_test:start(test_app, Config0),
+    Started =
+        case proplists:get_value(nova_test_started, Config) of
+            Apps when is_list(Apps) -> Apps
+        end,
+    ?assertMatch([_ | _], [A || A <- [test_app, nova, cowboy, ranch], lists:member(A, Started)]),
+    ok = nova_test:stop(Config),
+    assert_stopped(Started).
+
+already_running_apps_survive_stop_test(Config0) ->
     ok = test_app_env:load(0),
     ok = load_library_app(test_app_b),
-    ConfigA = nova_test:start(test_app, Config0),
-    ConfigB = nova_test:start(test_app_b, Config0),
+    {ok, Running} = application:ensure_all_started(test_app),
     try
-        ?assertEqual(
-            proplists:get_value(nova_test_port, ConfigA),
-            proplists:get_value(nova_test_port, ConfigB)
-        ),
-        ok = nova_test:stop(ConfigA),
+        ConfigB = nova_test:start(test_app_b, Config0),
+        ?assertEqual([test_app_b], proplists:get_value(nova_test_started, ConfigB)),
+        ok = nova_test:stop(ConfigB),
+        assert_stopped([test_app_b]),
+        ?assert(lists:keymember(test_app, 1, application:which_applications())),
         ?assert(lists:keymember(nova, 1, application:which_applications())),
         {ok, Resp} = nova_test:get("/test/json", ConfigB),
-        ?assertStatus(200, Resp),
-        ok = nova_test:stop(ConfigB),
-        ?assertNot(lists:keymember(nova, 1, application:which_applications()))
+        ?assertStatus(200, Resp)
     after
-        nova_test:stop(ConfigB)
+        stop_all(Running)
     end.
 
 stop_in_start_order_test(Config0) ->
@@ -86,6 +96,7 @@ stop_in_start_order_test(Config0) ->
     ConfigA = nova_test:start(test_app, Config0),
     ConfigB = nova_test:start(test_app_b, Config0),
     ok = nova_test:stop(ConfigA),
+    assert_stopped([test_app, nova, cowboy, ranch]),
     ok = nova_test:stop(ConfigB),
     assert_stopped([test_app, test_app_b, nova, cowboy, ranch]).
 
