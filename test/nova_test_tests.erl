@@ -163,45 +163,47 @@ cookie_header_format_test() ->
     [{"cookie", CookieStr}] = nova_test:cookie_header(Config),
     ?assertEqual("a=1", CookieStr).
 
-%% Internal: extract_set_cookies
+%% Internal: merge_set_cookies
 
-extract_set_cookies_empty_test() ->
-    ?assertEqual(#{}, nova_test:extract_set_cookies([])).
+merge_set_cookies_empty_test() ->
+    ?assertEqual(#{}, nova_test:merge_set_cookies([], #{})).
 
-extract_set_cookies_single_test() ->
+merge_set_cookies_single_test() ->
     Headers = [{"set-cookie", "name=val; Path=/"}],
-    Result = nova_test:extract_set_cookies(Headers),
+    Result = nova_test:merge_set_cookies(Headers, #{}),
     ?assertEqual(#{<<"name">> => <<"val">>}, Result).
 
-extract_set_cookies_non_cookie_test() ->
+merge_set_cookies_non_cookie_test() ->
     Headers = [{"content-type", "text/html"}],
-    ?assertEqual(#{}, nova_test:extract_set_cookies(Headers)).
+    ?assertEqual(#{}, nova_test:merge_set_cookies(Headers, #{})).
 
-extract_set_cookies_multiple_test() ->
+merge_set_cookies_multiple_test() ->
     Headers = [{"set-cookie", "a=1"}, {"set-cookie", "b=2"}],
-    Result = nova_test:extract_set_cookies(Headers),
+    Result = nova_test:merge_set_cookies(Headers, #{}),
     ?assertEqual(#{<<"a">> => <<"1">>, <<"b">> => <<"2">>}, Result).
 
-extract_set_cookies_case_insensitive_test() ->
+merge_set_cookies_case_insensitive_test() ->
     Headers = [{"Set-Cookie", "x=y"}],
-    Result = nova_test:extract_set_cookies(Headers),
+    Result = nova_test:merge_set_cookies(Headers, #{}),
     ?assertEqual(#{<<"x">> => <<"y">>}, Result).
 
-extract_set_cookies_malformed_test() ->
+merge_set_cookies_malformed_test() ->
     Headers = [{"set-cookie", "noequals"}, {"set-cookie", "good=val"}],
-    Result = nova_test:extract_set_cookies(Headers),
+    Result = nova_test:merge_set_cookies(Headers, #{}),
     ?assertEqual(#{<<"good">> => <<"val">>}, Result).
 
-%% Internal: parse_cookie
+%% Internal: parse_set_cookie
 
-parse_cookie_simple_test() ->
-    ?assertEqual({<<"name">>, <<"val">>}, nova_test:parse_cookie("name=val")).
+parse_set_cookie_simple_test() ->
+    ?assertEqual({<<"name">>, <<"val">>, active}, nova_test:parse_set_cookie("name=val")).
 
-parse_cookie_with_attrs_test() ->
-    ?assertEqual({<<"sid">>, <<"abc">>}, nova_test:parse_cookie("sid=abc; Path=/; HttpOnly")).
+parse_set_cookie_with_attrs_test() ->
+    ?assertEqual(
+        {<<"sid">>, <<"abc">>, active}, nova_test:parse_set_cookie("sid=abc; Path=/; HttpOnly")
+    ).
 
-parse_cookie_malformed_test() ->
-    ?assertEqual(error, nova_test:parse_cookie("noequals")).
+parse_set_cookie_malformed_test() ->
+    ?assertEqual(error, nova_test:parse_set_cookie("noequals")).
 
 %% Internal: generate_boundary
 
@@ -276,3 +278,125 @@ build_multipart_body_field_test() ->
     ?assert(binary:match(Bin, <<"--bnd\r\n">>) =/= nomatch),
     ?assert(binary:match(Bin, <<"v">>) =/= nomatch),
     ?assert(binary:match(Bin, <<"--bnd--">>) =/= nomatch).
+
+%% Cookie expiry
+
+save_cookies_max_age_zero_removes_test() ->
+    Config0 = nova_test:set_cookie(~"session_id", ~"abc", []),
+    Resp = #{
+        status => 200,
+        headers => [{"set-cookie", "session_id=abc; Max-Age=0; Path=/"}],
+        body => <<>>
+    },
+    ?assertEqual(#{}, nova_test:cookies(nova_test:save_cookies(Resp, Config0))).
+
+save_cookies_past_expires_removes_test() ->
+    Config0 = nova_test:set_cookie(~"sid", ~"abc", []),
+    Expired = "sid=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/",
+    Resp = #{status => 200, headers => [{"set-cookie", Expired}], body => <<>>},
+    ?assertEqual(undefined, nova_test:cookie(~"sid", nova_test:save_cookies(Resp, Config0))).
+
+save_cookies_future_expires_kept_test() ->
+    Cookie = "sid=abc; Expires=Fri, 01 Jan 2100 00:00:00 GMT",
+    Resp = #{status => 200, headers => [{"set-cookie", Cookie}], body => <<>>},
+    ?assertEqual(~"abc", nova_test:cookie(~"sid", nova_test:save_cookies(Resp, []))).
+
+max_age_wins_over_expires_test() ->
+    Cookie = "sid=abc; Max-Age=60; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+    ?assertEqual({~"sid", ~"abc", active}, nova_test:parse_set_cookie(Cookie)).
+
+cookie_value_with_equals_test() ->
+    ?assertEqual({~"t", ~"YWJj==", active}, nova_test:parse_set_cookie("t=YWJj==; Path=/")).
+
+%% Sessions
+
+session_carries_cookies_test() ->
+    Session = nova_test:session([]),
+    Resp = #{status => 200, headers => [{"set-cookie", "sid=abc"}], body => <<>>},
+    ?assertEqual(Session, nova_test:save_cookies(Resp, Session)),
+    ?assertEqual(~"abc", nova_test:cookie(~"sid", Session)),
+    ?assertEqual([{"cookie", "sid=abc"}], nova_test:cookie_header(Session)).
+
+session_starts_with_config_cookies_test() ->
+    Config = nova_test:set_cookie(~"a", ~"1", []),
+    Session = nova_test:session(Config),
+    ?assertEqual(#{~"a" => ~"1"}, nova_test:cookies(Session)),
+    ?assertEqual(undefined, proplists:get_value(nova_test_cookies, Session)).
+
+session_set_and_clear_test() ->
+    Session = nova_test:session([]),
+    ?assertEqual(Session, nova_test:set_cookie(~"a", ~"1", Session)),
+    ?assertEqual(~"1", nova_test:cookie(~"a", Session)),
+    ?assertEqual(Session, nova_test:clear_cookies(Session)),
+    ?assertEqual(#{}, nova_test:cookies(Session)).
+
+sessions_are_independent_test() ->
+    Alice = nova_test:session([]),
+    Bob = nova_test:session([]),
+    _ = nova_test:set_cookie(~"sid", ~"alice", Alice),
+    ?assertEqual(undefined, nova_test:cookie(~"sid", Bob)).
+
+session_expired_cookie_removed_test() ->
+    Session = nova_test:set_cookie(~"sid", ~"abc", nova_test:session([])),
+    Resp = #{status => 200, headers => [{"set-cookie", "sid=abc; Max-Age=0"}], body => <<>>},
+    _ = nova_test:save_cookies(Resp, Session),
+    ?assertEqual(#{}, nova_test:cookies(Session)).
+
+%% CSRF tokens
+
+csrf_token_from_form_test() ->
+    Html = ~"<form><input type=\"hidden\" name=\"_csrf_token\" value=\"abc+/=\"></form>",
+    ?assertEqual(~"abc+/=", nova_test:csrf_token(Html)).
+
+csrf_token_attribute_order_test() ->
+    Html = ~"<input value='tok' type='hidden' name='_csrf_token' />",
+    ?assertEqual(~"tok", nova_test:csrf_token(Html)).
+
+csrf_token_skips_other_inputs_test() ->
+    Html = ~"<input name=\"email\" value=\"a@b\"><input name=\"_csrf_token\" value=\"tok\">",
+    ?assertEqual(~"tok", nova_test:csrf_token(Html)).
+
+csrf_token_unescapes_html_test() ->
+    Html = ~"<input name=\"_csrf_token\" value=\"a&#x2F;b&#x3D;&amp;\">",
+    ?assertEqual(~"a/b=&", nova_test:csrf_token(Html)).
+
+csrf_token_custom_field_test() ->
+    Html = ~"<input name=\"_csrf_token\" value=\"no\"><input name=\"csrf\" value=\"yes\">",
+    ?assertEqual(~"yes", nova_test:csrf_token(~"csrf", Html)).
+
+csrf_token_from_meta_test() ->
+    Html = ~"<head><meta name=\"csrf-token\" content=\"meta-tok\"></head>",
+    ?assertEqual(~"meta-tok", nova_test:csrf_token(Html)).
+
+csrf_token_from_header_test() ->
+    Resp = #{status => 200, headers => [{"x-csrf-token", "hdr-tok"}], body => ~"{}"},
+    ?assertEqual(~"hdr-tok", nova_test:csrf_token(Resp)).
+
+csrf_token_from_response_body_test() ->
+    Resp = #{status => 200, headers => [], body => ~"<input name=\"_csrf_token\" value=\"t\">"},
+    ?assertEqual(~"t", nova_test:csrf_token(Resp)).
+
+csrf_token_missing_test() ->
+    ?assertEqual(undefined, nova_test:csrf_token(~"<form></form>")).
+
+%% Form bodies
+
+build_request_form_test() ->
+    Result = nova_test:build_request("http://localhost/x", [], #{
+        form => [{~"a", ~"1 2"}, {~"b", ~"&"}]
+    }),
+    ?assertEqual(
+        {"http://localhost/x", [], "application/x-www-form-urlencoded", ~"a=1+2&b=%26"},
+        Result
+    ).
+
+%% Lifecycle
+
+request_without_start_test() ->
+    ?assertError({nova_test_not_started, _}, nova_test:get("/", [])).
+
+start_unknown_app_test() ->
+    ?assertError(
+        {nova_test_start_failed, #{app := nova_test_no_such_app}},
+        nova_test:start(nova_test_no_such_app)
+    ).

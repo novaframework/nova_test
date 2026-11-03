@@ -21,9 +21,11 @@ Result = my_controller:create(Req1),
     with_auth_data/2,
     with_query/2,
     with_body/2,
+    with_form/2,
     with_peer/2,
     with_multipart/2,
-    with_cookies/2
+    with_cookies/2,
+    encode_qs/1
 ]).
 
 -spec new(Method :: atom(), Path :: string() | binary()) -> cowboy_req:req().
@@ -48,15 +50,18 @@ new(Method, Path) ->
 with_bindings(Bindings, Req) ->
     Req#{bindings => Bindings}.
 
--spec with_json(Json :: map(), Req :: cowboy_req:req()) -> cowboy_req:req().
+-doc """
+Set a JSON body. `json` holds `Json` as given, the way `nova_request_plugin`
+with `decode_json_body` leaves it, and `body` holds it encoded with the
+configured `json_lib` (OTP `json` when none is configured).
+""".
+-spec with_json(Json :: term(), Req :: cowboy_req:req()) -> cowboy_req:req().
 with_json(Json, Req) ->
-    JsonLib = json_lib(),
-    Body = JsonLib:encode(Json),
     Headers = maps:get(headers, Req, #{}),
     Req#{
         json => Json,
-        body => Body,
-        headers => Headers#{<<"content-type">> => <<"application/json">>}
+        body => nova_test_json:encode(Json),
+        headers => Headers#{~"content-type" => ~"application/json"}
     }.
 
 -spec with_header(Name :: binary(), Value :: binary(), Req :: cowboy_req:req()) -> cowboy_req:req().
@@ -68,25 +73,38 @@ with_header(Name, Value, Req) ->
 with_auth_data(AuthData, Req) ->
     Req#{auth_data => AuthData}.
 
--spec with_query(Params :: map(), Req :: cowboy_req:req()) -> cowboy_req:req().
+-doc """
+Set the query string. `qs` holds the encoded string and `parsed_qs` holds it
+parsed the way `nova_request_plugin` with `parse_qs => true` does: a map with
+binary keys and values, where the last of repeated keys wins. Pass a list of
+pairs to repeat a key. For `parse_qs => list`, use `cow_qs:parse_qs(maps:get(qs, Req))`.
+""".
+-spec with_query(Params :: nova_test:form_fields(), Req :: cowboy_req:req()) ->
+    cowboy_req:req().
 with_query(Params, Req) ->
-    QS = maps:fold(
-        fun(K, V, Acc) ->
-            KB = to_binary(K),
-            VB = to_binary(V),
-            case Acc of
-                <<>> -> <<KB/binary, "=", VB/binary>>;
-                _ -> <<Acc/binary, "&", KB/binary, "=", VB/binary>>
-            end
-        end,
-        <<>>,
-        Params
-    ),
-    Req#{qs => QS}.
+    QS = encode_qs(Params),
+    Req#{qs => QS, parsed_qs => maps:from_list(cow_qs:parse_qs(QS))}.
 
+-doc "Set a raw body. The body is not parsed; see `with_json/2` and `with_form/2`.".
 -spec with_body(Body :: binary(), Req :: cowboy_req:req()) -> cowboy_req:req().
 with_body(Body, Req) ->
     Req#{body => Body}.
+
+-doc """
+Set an `application/x-www-form-urlencoded` body. `params` holds the fields
+parsed the way `nova_request_plugin` with `read_urlencoded_body => true`
+does: a map with binary keys and values.
+""".
+-spec with_form(Fields :: nova_test:form_fields(), Req :: cowboy_req:req()) ->
+    cowboy_req:req().
+with_form(Fields, Req) ->
+    Body = encode_qs(Fields),
+    Headers = maps:get(headers, Req, #{}),
+    Req#{
+        body => Body,
+        params => maps:from_list(cow_qs:parse_qs(Body)),
+        headers => Headers#{~"content-type" => ~"application/x-www-form-urlencoded"}
+    }.
 
 -spec with_peer(Peer :: {inet:ip_address(), inet:port_number()}, Req :: cowboy_req:req()) ->
     cowboy_req:req().
@@ -122,6 +140,13 @@ with_cookies(Cookies, Req) ->
     Headers = maps:get(headers, Req, #{}),
     Req#{headers => Headers#{<<"cookie">> => CookieStr}}.
 
+-doc false.
+-spec encode_qs(nova_test:form_fields()) -> binary().
+encode_qs(Fields) when is_map(Fields) ->
+    encode_qs(maps:to_list(Fields));
+encode_qs(Fields) ->
+    cow_qs:qs([{to_binary(K), to_binary(V)} || {K, V} <- Fields]).
+
 %% Internal
 
 method_to_binary(get) ->
@@ -142,13 +167,10 @@ method_to_binary(Method) when is_atom(Method) ->
     list_to_binary(string:uppercase(atom_to_list(Method))).
 
 to_binary(V) when is_binary(V) -> V;
-to_binary(V) when is_list(V) -> list_to_binary(V);
+to_binary(V) when is_list(V) ->
+    case unicode:characters_to_binary(V) of
+        B when is_binary(B) -> B;
+        _ -> erlang:error({invalid_string, V})
+    end;
 to_binary(V) when is_atom(V) -> atom_to_binary(V, utf8);
 to_binary(V) when is_integer(V) -> integer_to_binary(V).
-
-json_lib() ->
-    try
-        nova:get_env(json_lib, thoas)
-    catch
-        _:_ -> thoas
-    end.

@@ -53,7 +53,11 @@ connect(Path, Config) ->
     {ok, conn()} | {error, term()}.
 connect(Path, Opts, Config) ->
     {ok, _} = application:ensure_all_started(gun),
-    Port = proplists:get_value(nova_test_port, Config),
+    Port =
+        case proplists:get_value(nova_test_port, Config) of
+            P when is_integer(P), P >= 0, P =< 65535 -> P;
+            _ -> erlang:error({nova_test_not_started, ~"call nova_test:start/1,2 first"})
+        end,
     {ok, GunPid} = gun:open("localhost", Port, #{protocols => [http]}),
     case gun:await_up(GunPid, 5000) of
         {ok, _Protocol} ->
@@ -94,11 +98,9 @@ send_text(Text, #{gun_pid := Pid, stream_ref := Ref, config := Config}) ->
     maybe_log_ws("SEND", Text, Config),
     gun:ws_send(Pid, Ref, {text, Text}).
 
--spec send_json(Json :: map(), Conn :: conn()) -> ok.
+-spec send_json(Json :: term(), Conn :: conn()) -> ok.
 send_json(Json, Conn) ->
-    JsonLib = json_lib(),
-    Encoded = iolist_to_binary(JsonLib:encode(Json)),
-    send_text(Encoded, Conn).
+    send_text(nova_test_json:encode(Json), Conn).
 
 -spec recv(Conn :: conn()) -> {ok, binary()} | {error, timeout | term()}.
 recv(Conn) ->
@@ -124,17 +126,15 @@ recv(#{gun_pid := Pid, stream_ref := Ref, monitor_ref := MonRef, config := Confi
         {error, timeout}
     end.
 
--spec recv_json(Conn :: conn()) -> {ok, map()} | {error, term()}.
+-spec recv_json(Conn :: conn()) -> {ok, dynamic()} | {error, term()}.
 recv_json(Conn) ->
     recv_json(Conn, 5000).
 
--spec recv_json(Conn :: conn(), Timeout :: non_neg_integer()) -> {ok, map()} | {error, term()}.
+-spec recv_json(Conn :: conn(), Timeout :: non_neg_integer()) -> {ok, dynamic()} | {error, term()}.
 recv_json(Conn, Timeout) ->
     case recv(Conn, Timeout) of
         {ok, Data} ->
-            JsonLib = json_lib(),
-            {ok, Decoded} = JsonLib:decode(Data),
-            {ok, Decoded};
+            {ok, nova_test_json:decode(Data)};
         {error, Reason} ->
             {error, Reason}
     end.
@@ -147,13 +147,6 @@ close(#{gun_pid := Pid, monitor_ref := MonRef, config := Config}) ->
     ok.
 
 %% Internal
-
-json_lib() ->
-    try
-        nova:get_env(json_lib, thoas)
-    catch
-        _:_ -> thoas
-    end.
 
 maybe_log_ws(Action, Detail, Config) ->
     case proplists:get_value(nova_test_logging, Config, false) of

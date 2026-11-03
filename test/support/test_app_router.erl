@@ -15,6 +15,29 @@ routes(_Env) ->
     #{
         prefix => "",
         security => false,
+        plugins => [
+            {pre_request, nova_request_plugin, #{parse_qs => true}}
+        ],
+        routes => [
+            {"/test/query", fun test_controller:echo_query/1, #{methods => [get]}}
+        ]
+    },
+    #{
+        prefix => "",
+        security => false,
+        plugins => [
+            {pre_request, nova_request_plugin, #{read_urlencoded_body => true}},
+            {pre_request, nova_csrf_plugin, #{}}
+        ],
+        routes => [
+            {"/test/form", fun test_controller:csrf_form/1, #{methods => [get]}},
+            {"/test/form", fun test_controller:csrf_submit/1, #{methods => [post]}},
+            {"/test/logout", fun test_controller:log_out/1, #{methods => [post]}}
+        ]
+    },
+    #{
+        prefix => "",
+        security => false,
         routes => [
             {"/test/json", fun test_controller:get_json/1, #{methods => [get]}},
             {"/test/json", fun test_controller:post_json/1, #{methods => [post]}},

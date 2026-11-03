@@ -83,6 +83,16 @@
     logging_test/1
 ]).
 
+%% Nova request plugin parity, sessions and CSRF
+-export([
+    listener_port_test/1,
+    query_matches_request_plugin_test/1,
+    form_post_test/1,
+    csrf_session_flow_test/1,
+    csrf_without_session_rejected_test/1,
+    session_cookie_deleted_test/1
+]).
+
 all() ->
     [
         {group, integration},
@@ -92,7 +102,8 @@ all() ->
         {group, cookies},
         {group, multipart},
         {group, websocket},
-        {group, logging}
+        {group, logging},
+        {group, sessions}
     ].
 
 groups() ->
@@ -152,24 +163,19 @@ groups() ->
         ]},
         {logging, [sequence], [
             logging_test
+        ]},
+        {sessions, [sequence], [
+            listener_port_test,
+            query_matches_request_plugin_test,
+            form_post_test,
+            csrf_session_flow_test,
+            csrf_without_session_rejected_test,
+            session_cookie_deleted_test
         ]}
     ].
 
 init_per_suite(Config) ->
-    ok = application:load(
-        {application, test_app, [
-            {description, "Test app for nova_test"},
-            {vsn, "0.0.1"},
-            {mod, {test_app, []}},
-            {applications, [kernel, stdlib, nova]},
-            {modules, [test_app, test_sup, test_app_router, test_controller, test_ws_handler]}
-        ]}
-    ),
-    application:set_env(nova, bootstrap_application, test_app),
-    application:set_env(nova, cowboy_configuration, #{port => 48484}),
-    application:set_env(nova, plugins, [
-        {pre_request, nova_request_plugin, #{decode_json_body => true}}
-    ]),
+    ok = test_app_env:load(58609),
     nova_test:start(test_app, Config).
 
 end_per_suite(Config) ->
@@ -463,3 +469,59 @@ logging_test(Config) ->
     Config3 = nova_test:disable_logging(Config2),
     {ok, Resp2} = nova_test:get("/test/json", Config3),
     ?assertStatus(200, Resp2).
+
+%% Nova request plugin parity, sessions and CSRF
+
+listener_port_test(Config) ->
+    ?assertEqual(ranch:get_port(nova_listener), proplists:get_value(nova_test_port, Config)).
+
+query_matches_request_plugin_test(Config) ->
+    Params = [{<<"q">>, <<"a b&c">>}, {<<"tag">>, <<"x">>}, {<<"tag">>, <<"y">>}],
+    Req = nova_test_req:with_query(Params, nova_test_req:new(get, "/test/query")),
+    {ok, Resp} = nova_test:get("/test/query?" ++ binary_to_list(maps:get(qs, Req)), Config),
+    ?assertStatus(200, Resp),
+    ?assertEqual(nova_test:json(Resp), maps:get(parsed_qs, Req)),
+    ?assertJsonResponse(#{<<"tag">> := <<"y">>}, test_controller:echo_query(Req)).
+
+form_post_test(Config) ->
+    Session = nova_test:session(Config),
+    {ok, Form} = nova_test:get("/test/form", Session),
+    Fields = [{<<"_csrf_token">>, nova_test:csrf_token(Form)}, {<<"name">>, <<"Åsa & co"/utf8>>}],
+    {ok, Resp} = nova_test:post("/test/form", #{form => Fields}, Session),
+    ?assertStatus(201, Resp),
+    ?assertJson(#{<<"name">> := <<"Åsa & co"/utf8>>}, Resp),
+    Req = nova_test_req:with_form(Fields, nova_test_req:new(post, "/test/form")),
+    ?assertJsonResponse(#{<<"name">> := <<"Åsa & co"/utf8>>}, test_controller:csrf_submit(Req)).
+
+csrf_session_flow_test(Config) ->
+    Session = nova_test:session(Config),
+    {ok, Form} = nova_test:get("/test/form", Session),
+    ?assertStatus(200, Form),
+    ?assertNotEqual(undefined, nova_test:cookie(<<"session_id">>, Session)),
+    Token = nova_test:csrf_token(Form),
+    ?assert(is_binary(Token)),
+    {ok, Bad} = nova_test:post("/test/form", #{form => [{<<"_csrf_token">>, <<"x">>}]}, Session),
+    ?assertStatus(403, Bad),
+    {ok, Good} = nova_test:post(
+        "/test/form", #{form => [{<<"_csrf_token">>, Token}, {<<"a">>, <<"1">>}]}, Session
+    ),
+    ?assertStatus(201, Good),
+    ?assertJson(#{<<"a">> := <<"1">>}, Good).
+
+csrf_without_session_rejected_test(Config) ->
+    {ok, Form} = nova_test:get("/test/form", Config),
+    Token = nova_test:csrf_token(Form),
+    {ok, Resp} = nova_test:post("/test/form", #{form => [{<<"_csrf_token">>, Token}]}, Config),
+    ?assertStatus(403, Resp).
+
+session_cookie_deleted_test(Config) ->
+    Session = nova_test:session(Config),
+    {ok, _} = nova_test:get("/test/form", Session),
+    ?assertNotEqual(undefined, nova_test:cookie(<<"session_id">>, Session)),
+    {ok, Form} = nova_test:get("/test/form", Session),
+    Token = nova_test:csrf_token(Form),
+    {ok, Resp} = nova_test:post(
+        "/test/logout", #{form => [{<<"_csrf_token">>, Token}]}, Session
+    ),
+    ?assertStatus(204, Resp),
+    ?assertEqual(undefined, nova_test:cookie(<<"session_id">>, Session)).
