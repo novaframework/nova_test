@@ -622,3 +622,15 @@ started_listener_prefers_configured_port_test() ->
 
 restore_env(App, Key, undefined) -> application:unset_env(App, Key);
 restore_env(App, Key, Value) -> application:set_env(App, Key, Value).
+
+%% Most specific cookie path
+
+cookies_prefers_longest_path_test() ->
+    Session = nova_test:session([]),
+    Resp = #{
+        status => 200,
+        headers => [{"set-cookie", "t=ac; Path=/a/c"}, {"set-cookie", "t=b; Path=/b"}],
+        body => <<>>
+    },
+    _ = nova_test:save_cookies(Resp, Session),
+    ?assertEqual(~"ac", nova_test:cookie(~"t", Session)).

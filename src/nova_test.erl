@@ -319,7 +319,8 @@ holds a name under several paths, the most specific path wins.
 cookies(Config) ->
     case session_jar(Config) of
         {ok, Jar} ->
-            #{N => V || {_, N, V} <- lists:sort(jar_entries(Jar)), is_binary(N), is_binary(V)};
+            Entries = lists:sort([{byte_size(P), P, N, V} || {P, N, V} <- jar_entries(Jar)]),
+            #{N => V || {_, _, N, V} <- Entries, is_binary(N), is_binary(V)};
         error ->
             case proplists:get_value(nova_test_cookies, Config, #{}) of
                 Cookies when is_map(Cookies) ->
