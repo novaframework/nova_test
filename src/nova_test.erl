@@ -177,13 +177,16 @@ fresh listener. Call it last, after the tests that use the application.
 Applications that were already running before `start/1,2`, the application
 itself included, are left running. When two `start/1,2` calls share
 dependencies, the first call started them, so stop the second one first.
+A `Config` threaded through several `start/2` calls stops what each of them
+started, newest first.
 """.
 -spec stop(Config :: config()) -> ok.
 stop(Config) ->
-    case proplists:get_value(nova_test_started, Config, []) of
-        Apps when is_list(Apps) -> stop_started([A || A <- Apps, is_atom(A)]);
-        _ -> ok
-    end.
+    _ = [
+        stop_started([A || A <- Apps, is_atom(A)])
+     || Apps <- proplists:get_all_values(nova_test_started, Config), is_list(Apps)
+    ],
+    ok.
 
 %% HTTP methods
 

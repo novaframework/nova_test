@@ -8,6 +8,11 @@
     bound_port_is_used_test/1,
     tls_listener_fails_test/1,
     stop_stops_what_start_started_test/1,
+    app_stops_before_its_dependencies_test/1,
+    inets_started_by_start_is_stopped_test/1,
+    running_inets_survives_stop_test/1,
+    failed_start_stops_inets_test/1,
+    threaded_config_stops_both_test/1,
     already_running_apps_survive_stop_test/1,
     stop_in_start_order_test/1,
     stop_in_reverse_order_test/1,
@@ -21,6 +26,11 @@ all() ->
         bound_port_is_used_test,
         tls_listener_fails_test,
         stop_stops_what_start_started_test,
+        app_stops_before_its_dependencies_test,
+        inets_started_by_start_is_stopped_test,
+        running_inets_survives_stop_test,
+        failed_start_stops_inets_test,
+        threaded_config_stops_both_test,
         already_running_apps_survive_stop_test,
         stop_in_start_order_test,
         stop_in_reverse_order_test,
@@ -64,19 +74,70 @@ tls_listener_fails_test(Config) ->
 
 stop_stops_what_start_started_test(Config0) ->
     ok = test_app_env:load(0),
+    ok = stop_inets(),
+    Before = running(),
     Config = nova_test:start(test_app, Config0),
-    Started =
-        case proplists:get_value(nova_test_started, Config) of
-            Apps when is_list(Apps) -> Apps
-        end,
-    ?assertMatch([_ | _], [A || A <- [test_app, nova, cowboy, ranch], lists:member(A, Started)]),
+    Started = started(Config),
+    NewlyRunning = running() -- Before,
+    ?assertEqual(lists:sort(NewlyRunning), lists:sort(Started)),
+    ?assertEqual(length(NewlyRunning), length(Started)),
+    ?assertEqual(inets, hd(Started)),
+    ?assertEqual(test_app, lists:last(Started)),
+    ?assertEqual([], [A || A <- [nova, cowboy, ranch], not lists:member(A, Started)]),
     ok = nova_test:stop(Config),
-    assert_stopped(Started).
+    ?assertEqual(Before, running()).
+
+app_stops_before_its_dependencies_test(Config0) ->
+    ok = test_app_env:load(0),
+    _ = persistent_term:erase({test_app, running_at_stop}),
+    Config = nova_test:start(test_app, Config0),
+    ok = nova_test:stop(Config),
+    ?assertEqual(
+        [nova_sup, cowboy_sup, ranch_sup],
+        persistent_term:get({test_app, running_at_stop})
+    ).
+
+inets_started_by_start_is_stopped_test(Config0) ->
+    ok = test_app_env:load(0),
+    ok = stop_inets(),
+    Config = nova_test:start(test_app, Config0),
+    ?assert(lists:member(inets, started(Config))),
+    ok = nova_test:stop(Config),
+    ?assertNot(lists:member(inets, running())).
+
+running_inets_survives_stop_test(Config0) ->
+    ok = test_app_env:load(0),
+    {ok, InetsStarted} = application:ensure_all_started(inets),
+    try
+        Config = nova_test:start(test_app, Config0),
+        ?assertNot(lists:member(inets, started(Config))),
+        ok = nova_test:stop(Config),
+        ?assert(lists:member(inets, running()))
+    after
+        stop_all(InetsStarted)
+    end.
+
+failed_start_stops_inets_test(Config) ->
+    ok = stop_inets(),
+    ?assertError(
+        {nova_test_start_failed, #{app := nova_test_no_such_app}},
+        nova_test:start(nova_test_no_such_app, Config)
+    ),
+    ?assertNot(lists:member(inets, running())).
+
+threaded_config_stops_both_test(Config0) ->
+    ok = test_app_env:load(0),
+    ok = load_library_app(test_app_b),
+    Before = running(),
+    ok = nova_test:stop(nova_test:start(test_app_b, nova_test:start(test_app, Config0))),
+    ?assertEqual([], running() -- Before).
 
 already_running_apps_survive_stop_test(Config0) ->
     ok = test_app_env:load(0),
     ok = load_library_app(test_app_b),
-    {ok, Running} = application:ensure_all_started(test_app),
+    {ok, InetsRunning} = application:ensure_all_started(inets),
+    {ok, AppRunning} = application:ensure_all_started(test_app),
+    Running = InetsRunning ++ AppRunning,
     try
         ConfigB = nova_test:start(test_app_b, Config0),
         ?assertEqual([test_app_b], proplists:get_value(nova_test_started, ConfigB)),
@@ -131,6 +192,20 @@ running_app_kept_on_tls_test(Config) ->
         ?assert(lists:keymember(test_app, 1, application:which_applications()))
     after
         stop_all(Started)
+    end.
+
+running() ->
+    [A || {A, _, _} <- application:which_applications()].
+
+started(Config) ->
+    case proplists:get_value(nova_test_started, Config) of
+        Apps when is_list(Apps) -> Apps
+    end.
+
+stop_inets() ->
+    case application:stop(inets) of
+        ok -> ok;
+        {error, {not_started, inets}} -> ok
     end.
 
 take_port() ->
