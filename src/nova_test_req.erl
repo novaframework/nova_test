@@ -51,16 +51,18 @@ with_bindings(Bindings, Req) ->
     Req#{bindings => Bindings}.
 
 -doc """
-Set a JSON body. `json` holds `Json` as given, the way `nova_request_plugin`
-with `decode_json_body` leaves it, and `body` holds it encoded with the
-configured `json_lib` (OTP `json` when none is configured).
+Set a JSON body. `body` holds `Json` encoded with the configured `json_lib`
+(OTP `json` when none is configured), and `json` holds that body decoded
+again, the way `nova_request_plugin` with `decode_json_body` leaves it: keys
+are binaries even when `Json` used atoms.
 """.
 -spec with_json(Json :: term(), Req :: cowboy_req:req()) -> cowboy_req:req().
 with_json(Json, Req) ->
     Headers = maps:get(headers, Req, #{}),
+    Body = nova_test_json:encode(Json),
     Req#{
-        json => Json,
-        body => nova_test_json:encode(Json),
+        json => nova_test_json:decode(Body),
+        body => Body,
         headers => Headers#{~"content-type" => ~"application/json"}
     }.
 
