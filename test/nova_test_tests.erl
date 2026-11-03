@@ -565,3 +565,38 @@ undefined_form_value_raises_test_() ->
         ),
         ?_assertEqual(~"a=b", nova_test_req:encode_qs([{a, b}]))
     ].
+
+%% Log redaction
+
+log_redacts_secrets_test() ->
+    Opts = #{
+        headers => [{~"Authorization", ~"Bearer s3cret-auth"}, {~"x-csrf-token", ~"s3cret-hdr"}],
+        form => [
+            {~"email", ~"alice@example.com"},
+            {~"password", ~"s3cret-pw"},
+            {~"password_confirmation", ~"s3cret-pw2"},
+            {~"_csrf_token", ~"s3cret-csrf"}
+        ]
+    },
+    Resp = #{
+        status => 200,
+        headers => [{"Set-Cookie", "session_id=s3cret-sid"}, {"content-type", "text/html"}],
+        body => <<>>
+    },
+    Message = log_text(post, "/login", Opts, Resp),
+    ?assertEqual(nomatch, binary:match(Message, ~"s3cret")),
+    ?assertNotEqual(nomatch, binary:match(Message, ~"[redacted]")),
+    ?assertNotEqual(nomatch, binary:match(Message, ~"alice%40example.com")),
+    ?assertNotEqual(nomatch, binary:match(Message, ~"text/html")).
+
+log_redacts_cookie_request_header_test() ->
+    Opts = #{headers => [{~"Cookie", ~"session_id=s3cret"}]},
+    Resp = #{status => 200, headers => [], body => <<>>},
+    Message = log_text(get, "/", Opts, Resp),
+    ?assertEqual(nomatch, binary:match(Message, ~"s3cret")).
+
+-spec log_text(nova_test:method(), string(), nova_test:opts(), nova_test:response()) -> binary().
+log_text(Method, Path, Opts, Resp) ->
+    case unicode:characters_to_binary(nova_test:log_message(Method, Path, Opts, Resp)) of
+        Text when is_binary(Text) -> Text
+    end.

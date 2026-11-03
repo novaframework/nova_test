@@ -82,6 +82,7 @@ module when neither sets it.
     default_path/1,
     parse_set_cookie/1,
     maybe_log/5,
+    log_message/4,
     generate_boundary/0,
     multipart_part/2
 ]).
@@ -499,6 +500,12 @@ csrf_token(Opts, #{body := Body} = Response) ->
 
 %% Logging
 
+-doc """
+Log each request and response made with the returned Config to `ct:pal`.
+The values of the `authorization`, `cookie`, `set-cookie` and `x-csrf-token`
+headers and of the `password`, `password_confirmation` and `_csrf_token` form
+fields are logged as `[redacted]`. JSON and raw bodies are logged as sent.
+""".
 -spec enable_logging(Config :: config()) -> config().
 enable_logging(Config) ->
     put_config(nova_test_logging, true, Config).
@@ -880,36 +887,60 @@ unescape_html(Value, []) ->
 unescape_html(Value, [{Entity, Char} | Rest]) ->
     unescape_html(binary:replace(Value, Entity, Char, [global]), Rest).
 
-maybe_log(Method, Path, Opts, #{status := Status, headers := RespHeaders, body := Body}, Config) ->
+maybe_log(Method, Path, Opts, Response, Config) ->
     case proplists:get_value(nova_test_logging, Config, false) of
-        true ->
-            ReqBody =
-                case Opts of
-                    #{json := Json} -> nova_test_json:encode(Json);
-                    #{form := Fields} -> nova_test_req:encode_qs(Fields);
-                    #{body := B} -> B;
-                    _ -> <<>>
-                end,
-            ct:pal(
-                "~n=== nova_test ~s ~s ===~n"
-                "Request headers: ~p~n"
-                "Request body: ~ts~n"
-                "Response status: ~p~n"
-                "Response headers: ~p~n"
-                "Response body: ~ts~n",
-                [
-                    string:uppercase(atom_to_list(Method)),
-                    Path,
-                    build_headers(Opts),
-                    ReqBody,
-                    Status,
-                    RespHeaders,
-                    Body
-                ]
-            );
-        _ ->
-            ok
+        true -> ct:pal("~ts", [log_message(Method, Path, Opts, Response)]);
+        _ -> ok
     end.
+
+-spec log_message(method(), string(), opts(), response()) -> unicode:chardata().
+log_message(Method, Path, Opts, #{status := Status, headers := RespHeaders, body := Body}) ->
+    ReqBody =
+        case Opts of
+            #{json := Json} -> nova_test_json:encode(Json);
+            #{form := Fields} -> redacted_form(Fields);
+            #{body := B} -> B;
+            _ -> <<>>
+        end,
+    io_lib:format(
+        "~n=== nova_test ~s ~s ===~n"
+        "Request headers: ~p~n"
+        "Request body: ~ts~n"
+        "Response status: ~p~n"
+        "Response headers: ~p~n"
+        "Response body: ~ts~n",
+        [
+            string:uppercase(atom_to_list(Method)),
+            Path,
+            redacted_headers(build_headers(Opts)),
+            ReqBody,
+            Status,
+            redacted_headers(RespHeaders),
+            Body
+        ]
+    ).
+
+-spec redacted_headers([{string(), string()}]) -> [{string(), string()}].
+redacted_headers(Headers) ->
+    Secret = ["authorization", "cookie", "set-cookie", "x-csrf-token"],
+    [
+        case lists:member(string:lowercase(K), Secret) of
+            true -> {K, "[redacted]"};
+            false -> {K, V}
+        end
+     || {K, V} <- Headers
+    ].
+
+-spec redacted_form(form_fields()) -> binary().
+redacted_form(Fields) ->
+    Secret = [~"password", ~"password_confirmation", ~"_csrf_token"],
+    cow_qs:qs([
+        case lists:member(string:lowercase(K), Secret) of
+            true -> {K, ~"[redacted]"};
+            false -> {K, V}
+        end
+     || {K, V} <- cow_qs:parse_qs(nova_test_req:encode_qs(Fields))
+    ]).
 
 generate_boundary() ->
     Int = erlang:unique_integer([positive]),

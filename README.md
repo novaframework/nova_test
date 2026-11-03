@@ -194,6 +194,10 @@ Config2 = nova_test:enable_logging(Config),
 %% Prints method, path, headers, body, status to ct:pal
 ```
 
+The values of the `authorization`, `cookie`, `set-cookie` and `x-csrf-token` headers
+and of the `password`, `password_confirmation` and `_csrf_token` form fields are logged
+as `[redacted]`. JSON and raw bodies are logged as sent.
+
 ## WebSocket Tests
 
 ```erlang
