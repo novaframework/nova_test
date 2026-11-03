@@ -458,8 +458,29 @@ Looks for the `value` of an `<input>` whose `name` is the `field` option
 (default `~"_csrf_token"`, the plugin's `field_name` default), and then, for a
 response, for the header named by the `header` option (default
 `"x-csrf-token"`, the plugin's `header_name` default). Pass the plugin's
-`field_name`/`header_name` here if you changed them. Returns `undefined` when
-there is no token.
+`field_name`/`header_name` here if you changed them.
+
+`nova_csrf_plugin` only reads `x-csrf-token` from requests and never sets it
+on responses, so the header fallback finds a token only when the application
+sets that header itself.
+
+Returns `undefined` when there is no token. Sending `undefined` as a `form`
+value raises `{nova_test_undefined_form_value, #{field, reason}}` instead of
+posting the string `"undefined"`.
+
+A negative test must use a session that holds a token, since the plugin also
+answers 403 when there is no session at all:
+
+```erlang
+Session = nova_test:session(Config),
+{ok, Form} = nova_test:get("/form", Session),
+Token = nova_test:csrf_token(Form),
+?assert(is_binary(Token)),
+{ok, Missing} = nova_test:post("/form", #{form => [{<<"a">>, <<"1">>}]}, Session),
+?assertStatus(403, Missing),
+{ok, Forged} = nova_test:post("/form", #{form => [{<<"_csrf_token">>, <<"forged">>}]}, Session),
+?assertStatus(403, Forged).
+```
 """.
 -spec csrf_token(Opts :: csrf_opts(), response() | binary()) -> binary() | undefined.
 csrf_token(Opts, Html) when is_binary(Html) ->
@@ -788,10 +809,10 @@ date_expiry(Date) ->
             end
     end.
 
+%% A `>` inside a quoted attribute value does not end the tag.
 tag_attribute(Html, Tag, KeyAttribute, KeyValue, ValueAttribute) ->
-    case
-        re:run(Html, <<"<", Tag/binary, "\\b[^>]*>">>, [global, caseless, {capture, first, binary}])
-    of
+    Pattern = <<"<", Tag/binary, "\\b(?:\"[^\"]*\"|'[^']*'|[^'\">])*>">>,
+    case re:run(Html, Pattern, [global, caseless, {capture, first, binary}]) of
         {match, Matches} ->
             find_tag([T || [T] <- Matches], KeyAttribute, KeyValue, ValueAttribute);
         nomatch ->
@@ -801,17 +822,41 @@ tag_attribute(Html, Tag, KeyAttribute, KeyValue, ValueAttribute) ->
 find_tag([], _KeyAttribute, _KeyValue, _ValueAttribute) ->
     undefined;
 find_tag([Tag | Rest], KeyAttribute, KeyValue, ValueAttribute) ->
-    case {attribute(KeyAttribute, Tag), attribute(ValueAttribute, Tag)} of
-        {{ok, KeyValue}, {ok, Value}} -> Value;
+    Attributes = tag_attributes(Tag),
+    case
+        {lists:keyfind(KeyAttribute, 1, Attributes), lists:keyfind(ValueAttribute, 1, Attributes)}
+    of
+        {{_, KeyValue}, {_, Value}} -> Value;
         _ -> find_tag(Rest, KeyAttribute, KeyValue, ValueAttribute)
     end.
 
-attribute(Name, Tag) ->
-    Pattern = <<"\\s", Name/binary, "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'>]+))">>,
-    case re:run(Tag, Pattern, [caseless, {capture, all_but_first, binary}]) of
-        {match, Groups} -> {ok, unescape_html(iolist_to_binary([G || G <- Groups, is_binary(G)]))};
-        nomatch -> error
+%% Tokenising the whole tag keeps text inside a quoted value from being read
+%% as another attribute.
+-spec tag_attributes(binary()) -> [{binary(), binary()}].
+tag_attributes(Tag) ->
+    Pattern = ~"\\s([^\\s\"'>/=]+)\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s\"'>]+)",
+    case re:run(Tag, Pattern, [global, {capture, all_but_first, binary}]) of
+        {match, Matches} ->
+            [
+                {lowercase(N), unescape_html(unquote(V))}
+             || [N, V] <- Matches, is_binary(N), is_binary(V)
+            ];
+        nomatch ->
+            []
     end.
+
+-spec lowercase(binary()) -> binary().
+lowercase(Name) ->
+    case string:lowercase(Name) of
+        Lower when is_binary(Lower) -> Lower;
+        _ -> Name
+    end.
+
+-spec unquote(binary()) -> binary().
+unquote(<<Q, Rest/binary>>) when Q =:= $"; Q =:= $' ->
+    binary:part(Rest, 0, byte_size(Rest) - 1);
+unquote(Value) ->
+    Value.
 
 unescape_html(Value) ->
     unescape_html(Value, [

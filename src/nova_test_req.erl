@@ -147,7 +147,18 @@ with_cookies(Cookies, Req) ->
 encode_qs(Fields) when is_map(Fields) ->
     encode_qs(maps:to_list(Fields));
 encode_qs(Fields) ->
-    cow_qs:qs([{to_binary(K), to_binary(V)} || {K, V} <- Fields]).
+    cow_qs:qs([{to_binary(K), field_value(K, V)} || {K, V} <- Fields]).
+
+%% `undefined` is what nova_test:csrf_token/1 returns when it finds no token.
+field_value(Name, undefined) ->
+    erlang:error(
+        {nova_test_undefined_form_value, #{
+            field => Name,
+            reason => ~"form value is undefined, for example a csrf_token/1 that found no token"
+        }}
+    );
+field_value(_Name, Value) ->
+    to_binary(Value).
 
 %% Internal
 

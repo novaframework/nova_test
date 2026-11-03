@@ -531,3 +531,37 @@ cookie_bytes_not_reencoded_test() ->
     Resp = #{status => 200, headers => [{"set-cookie", [$s, $=, 195, 169]}], body => <<>>},
     ?assertEqual(<<195, 169>>, nova_test:cookie(~"s", nova_test:save_cookies(Resp, []))),
     ?assertMatch([#{value := <<195, 169>>}], nova_test:set_cookies(Resp)).
+
+%% CSRF token tokenising
+
+csrf_token_ignores_name_inside_value_test() ->
+    Html =
+        ~"<input value=\"x name=_csrf_token\" type=\"hidden\"><input name=\"_csrf_token\" value=\"real\">",
+    ?assertEqual(~"real", nova_test:csrf_token(Html)).
+
+csrf_token_ignores_value_inside_other_attribute_test() ->
+    Html = ~"<input name=\"_csrf_token\" data-x=\" value=evil\" value2=\"x\" value=\"real\">",
+    ?assertEqual(~"real", nova_test:csrf_token(Html)).
+
+csrf_token_gt_inside_quoted_value_test() ->
+    Html = ~"<input title=\"a > b\" name=\"_csrf_token\" value=\"real\">",
+    ?assertEqual(~"real", nova_test:csrf_token(Html)).
+
+%% Undefined form values
+
+undefined_form_value_raises_test_() ->
+    [
+        ?_assertError(
+            {nova_test_undefined_form_value, #{field := ~"_csrf_token", reason := _}},
+            nova_test_req:encode_qs([{~"_csrf_token", undefined}])
+        ),
+        ?_assertError(
+            {nova_test_undefined_form_value, _},
+            nova_test:post(
+                "/x",
+                #{form => #{~"_csrf_token" => nova_test:csrf_token(~"<form></form>")}},
+                [{nova_test_port, 1}]
+            )
+        ),
+        ?_assertEqual(~"a=b", nova_test_req:encode_qs([{a, b}]))
+    ].

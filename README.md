@@ -138,8 +138,14 @@ session_cookie_flags_test(Config) ->
 
 `nova_test:csrf_token/1` follows `nova_csrf_plugin`'s conventions: it reads the
 `value` of the page's `<input name="_csrf_token">`, and otherwise the `x-csrf-token`
-response header. If you changed the plugin's `field_name` or `header_name`, pass them:
+response header. The plugin only reads that header from requests and never sets it on
+responses, so the fallback finds a token only when your application sets the header
+itself. If you changed the plugin's `field_name` or `header_name`, pass them:
 `nova_test:csrf_token(#{field => <<"csrf">>, header => "x-xsrf-token"}, Resp)`.
+
+`csrf_token` returns `undefined` when the page has no token. A `form` value of `undefined`
+raises `{nova_test_undefined_form_value, #{field := Name, reason := Reason}}` instead of
+posting the string `"undefined"`, so a missing token fails the test where it happens.
 
 ```erlang
 log_in_test(Config) ->
@@ -153,6 +159,24 @@ log_in_test(Config) ->
     ?assertStatus(302, Resp),
     {ok, Page} = nova_test:get("/dashboard", Session),
     ?assertStatus(200, Page).
+```
+
+For the negative case, post from a session that holds a token. `nova_csrf_plugin` also
+answers 403 when there is no session at all, so a 403 from a fresh client proves nothing
+about the token check:
+
+```erlang
+csrf_rejected_test(Config) ->
+    Session = nova_test:session(Config),
+    {ok, Form} = nova_test:get("/login", Session),
+    ?assert(is_binary(nova_test:csrf_token(Form))),
+    {ok, Missing} = nova_test:post("/login", #{form => [{<<"email">>, <<"a@b">>}]}, Session),
+    ?assertStatus(403, Missing),
+    {ok, Forged} = nova_test:post("/login", #{form => [
+        {<<"_csrf_token">>, <<"forged">>},
+        {<<"email">>, <<"a@b">>}
+    ]}, Session),
+    ?assertStatus(403, Forged).
 ```
 
 Call `session/1` once per simulated client and use each jar from one process at a time.

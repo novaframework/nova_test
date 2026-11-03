@@ -504,6 +504,8 @@ csrf_session_flow_test(Config) ->
     ?assertNotEqual(undefined, nova_test:cookie(<<"session_id">>, Session)),
     Token = nova_test:csrf_token(Form),
     ?assert(is_binary(Token)),
+    {ok, Missing} = nova_test:post("/test/form", #{form => [{<<"a">>, <<"1">>}]}, Session),
+    ?assertStatus(403, Missing),
     {ok, Bad} = nova_test:post("/test/form", #{form => [{<<"_csrf_token">>, <<"x">>}]}, Session),
     ?assertStatus(403, Bad),
     {ok, Good} = nova_test:post(
