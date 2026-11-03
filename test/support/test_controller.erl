@@ -54,8 +54,9 @@ echo_query(#{parsed_qs := Qs}) ->
     {json, Qs}.
 
 csrf_form(#{csrf_token := Token}) ->
-    Html = <<"<form method=\"post\"><input type=\"hidden\" name=\"_csrf_token\" value=\"",
-        Token/binary, "\"></form>">>,
+    Html =
+        <<"<form method=\"post\"><input type=\"hidden\" name=\"_csrf_token\" value=\"",
+            Token/binary, "\"></form>">>,
     {status, 200, #{<<"content-type">> => <<"text/html">>}, Html};
 csrf_form(_Req) ->
     {status, 500}.
@@ -84,10 +85,11 @@ read_multipart(Req, Acc) ->
                 <<"size">> => byte_size(Body),
                 <<"body">> => Body
             },
-            Part2 = case Filename of
-                undefined -> Part;
-                _ -> Part#{<<"filename">> => Filename}
-            end,
+            Part2 =
+                case Filename of
+                    undefined -> Part;
+                    _ -> Part#{<<"filename">> => Filename}
+                end,
             read_multipart(Req3, [Part2 | Acc]);
         {done, Req2} ->
             {lists:reverse(Acc), Req2}
