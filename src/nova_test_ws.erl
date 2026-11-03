@@ -70,7 +70,7 @@ connect(Path, Opts, Config) ->
     {ok, GunPid} = gun:open("localhost", Port, #{protocols => [http]}),
     case gun:await_up(GunPid, 5000) of
         {ok, _Protocol} ->
-            Headers = maps:get(headers, Opts, []) ++ nova_test:cookie_header(Path, Config),
+            Headers = nova_test:with_cookie_header(maps:get(headers, Opts, []), Path, Config),
             StreamRef = gun:ws_upgrade(GunPid, Path, Headers),
             MonRef = monitor(process, GunPid),
             receive

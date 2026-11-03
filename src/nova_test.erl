@@ -59,7 +59,8 @@ module when neither sets it.
     enable_logging/1,
     disable_logging/1,
     build_multipart_body/2,
-    check_path/1
+    check_path/1,
+    with_cookie_header/3
 ]).
 
 -export_type([
@@ -242,9 +243,9 @@ response are stored in it.
 request(Method, Path, Opts, Config) ->
     ok = check_path(Path),
     URL = "http://localhost:" ++ integer_to_list(port(Config)) ++ Path,
-    Headers =
-        build_headers(Opts) ++
-            [{binary_to_list(K), binary_to_list(V)} || {K, V} <- cookie_header(Path, Config)],
+    Headers = build_headers(#{
+        headers => with_cookie_header(maps:get(headers, Opts, []), Path, Config)
+    }),
     Request = build_request(URL, Headers, Opts),
     HttpOpts = [{autoredirect, false}],
     ReqOpts = [{body_format, binary}],
@@ -360,7 +361,9 @@ The `cookie` request header `Config` would send for a request to `Path`, as
 `[]` or `[{<<"cookie">>, Value}]`. With a session only the cookies whose
 `Path` matches are included, most specific path first; without one, every
 cookie in `Config`. Use it to add cookies to requests made with another
-client; `nova_test_ws:connect/2,3` already does.
+client; `nova_test_ws:connect/2,3` already does. The request helpers and
+`nova_test_ws:connect/3` merge a `cookie` header passed in `headers` into the
+same header, the caller's pairs first.
 """.
 -spec cookie_header(Path :: string(), Config :: config()) -> [{binary(), binary()}].
 cookie_header(Path, Config) ->
@@ -386,6 +389,23 @@ cookie_header(Path, Config) ->
             >>,
             [{~"cookie", Value}]
     end.
+
+-doc false.
+-spec with_cookie_header([{binary(), binary()}], string(), config()) -> [{binary(), binary()}].
+with_cookie_header(Headers, Path, Config) ->
+    case cookie_header(Path, Config) of
+        [] ->
+            Headers;
+        [{_, JarCookies}] ->
+            Own = [V || {K, V} <- Headers, is_cookie_header(K)],
+            Rest = [H || {K, _} = H <- Headers, not is_cookie_header(K)],
+            <<"; ", Value/binary>> = <<<<"; ", C/binary>> || C <- Own ++ [JarCookies]>>,
+            Rest ++ [{~"cookie", Value}]
+    end.
+
+-spec is_cookie_header(binary()) -> boolean().
+is_cookie_header(Name) ->
+    string:lowercase(Name) =:= ~"cookie".
 
 -doc """
 Every `Set-Cookie` header of `Response`, in order, with its attributes.

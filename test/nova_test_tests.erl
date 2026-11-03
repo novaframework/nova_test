@@ -634,3 +634,52 @@ cookies_prefers_longest_path_test() ->
     },
     _ = nova_test:save_cookies(Resp, Session),
     ?assertEqual(~"ac", nova_test:cookie(~"t", Session)).
+
+%% Caller cookie header merged with the jar's
+
+with_cookie_header_test_() ->
+    Session = nova_test:set_cookie(~"sid", ~"x", []),
+    [
+        ?_assertEqual(
+            [{~"accept", ~"*/*"}, {~"cookie", ~"a=1; b=2; sid=x"}],
+            nova_test:with_cookie_header(
+                [{~"Cookie", ~"a=1"}, {~"accept", ~"*/*"}, {~"cookie", ~"b=2"}], "/", Session
+            )
+        ),
+        ?_assertEqual(
+            [{~"cookie", ~"a=1"}], nova_test:with_cookie_header([{~"cookie", ~"a=1"}], "/", [])
+        ),
+        ?_assertEqual([{~"cookie", ~"sid=x"}], nova_test:with_cookie_header([], "/", Session))
+    ].
+
+request_sends_one_cookie_header_test() ->
+    {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {packet, raw}]),
+    {ok, Port} = inet:port(Listen),
+    Self = self(),
+    _ = spawn_link(fun() -> capture_request(Listen, Self) end),
+    Config = nova_test:set_cookie(~"sid", ~"x", [{nova_test_port, Port}]),
+    {ok, #{status := 200}} = nova_test:get("/", #{headers => [{~"cookie", ~"a=1"}]}, Config),
+    Request =
+        receive
+            {request, R} -> R
+        after 5000 -> error(no_request)
+        end,
+    ?assertEqual(1, length(binary:matches(Request, ~"\r\ncookie:"))),
+    ?assertNotEqual(nomatch, binary:match(Request, ~"\r\ncookie: a=1; sid=x\r\n")),
+    gen_tcp:close(Listen).
+
+capture_request(Listen, Parent) ->
+    {ok, Socket} = gen_tcp:accept(Listen),
+    Parent ! {request, read_head(Socket, <<>>)},
+    ok = gen_tcp:send(Socket, ~"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"),
+    gen_tcp:close(Socket).
+
+read_head(Socket, Acc) ->
+    case binary:match(Acc, ~"\r\n\r\n") of
+        nomatch ->
+            case gen_tcp:recv(Socket, 0, 5000) of
+                {ok, Data} when is_binary(Data) -> read_head(Socket, <<Acc/binary, Data/binary>>)
+            end;
+        _ ->
+            Acc
+    end.

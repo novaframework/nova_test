@@ -123,7 +123,8 @@ and stores the cookies the response sets, like a browser. Nova sessions and
 cookies on name and `Path` (RFC 6265 path matching and default path); `Domain`, `Secure`
 and `HttpOnly` are ignored, since every request goes to the application under test.
 `nova_test:cookie_header/2` returns the `cookie` header for a path, for use with another
-client.
+client. A `cookie` header you pass in `headers` is merged with the jar's into one header,
+your pairs first.
 
 To assert cookie attributes, read them from the response with `nova_test:set_cookies/1`.
 It returns every `Set-Cookie` header (`nova_test:header/2` returns only the first) as
