@@ -64,4 +64,21 @@
     ?assertMatch({ok, Pattern}, nova_test_ws:recv_json(Conn))
 ).
 
+%% Test generator variants, for use in EUnit `_test_()` generators
+
+-define(_assertStatus(Expected, Resp), ?_test(?assertStatus(Expected, Resp))).
+-define(_assertJson(Pattern, Resp), ?_test(?assertJson(Pattern, Resp))).
+-define(_assertBody(Expected, Resp), ?_test(?assertBody(Expected, Resp))).
+-define(_assertHeader(Name, Expected, Resp), ?_test(?assertHeader(Name, Expected, Resp))).
+-define(_assertJsonResponse(Pattern, Result), ?_test(?assertJsonResponse(Pattern, Result))).
+-define(_assertJsonResponse(Status, Pattern, Result),
+    ?_test(?assertJsonResponse(Status, Pattern, Result))
+).
+-define(_assertStatusResponse(Code, Result), ?_test(?assertStatusResponse(Code, Result))).
+-define(_assertRedirect(Target, Result), ?_test(?assertRedirect(Target, Result))).
+-define(_assertOkResponse(Pattern, Result), ?_test(?assertOkResponse(Pattern, Result))).
+-define(_assertCookie(Name, Expected, Config), ?_test(?assertCookie(Name, Expected, Config))).
+-define(_assertWsRecv(Pattern, Conn), ?_test(?assertWsRecv(Pattern, Conn))).
+-define(_assertWsRecvJson(Pattern, Conn), ?_test(?assertWsRecvJson(Pattern, Conn))).
+
 -endif.
