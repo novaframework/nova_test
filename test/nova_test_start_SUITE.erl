@@ -14,8 +14,6 @@
     running_app_kept_on_tls_test/1
 ]).
 
--define(TAKEN_PORT, 58610).
-
 all() ->
     [
         port_in_use_fails_test,
@@ -29,11 +27,11 @@ all() ->
     ].
 
 port_in_use_fails_test(Config) ->
-    ok = test_app_env:load(?TAKEN_PORT),
-    {ok, Socket} = gen_tcp:listen(?TAKEN_PORT, [{reuseaddr, true}]),
+    {Socket, Port} = take_port(),
+    ok = test_app_env:load(Port),
     try
         ?assertError(
-            {nova_test_listener_not_running, #{app := test_app, configured_port := ?TAKEN_PORT}},
+            {nova_test_listener_not_running, #{app := test_app, configured_port := Port}},
             nova_test:start(test_app, Config)
         ),
         ?assertNot(lists:keymember(test_app, 1, application:which_applications())),
@@ -102,8 +100,8 @@ stop_in_reverse_order_test(Config0) ->
     assert_stopped([test_app, test_app_b, nova, cowboy, ranch]).
 
 running_app_kept_when_listener_missing_test(Config) ->
-    ok = test_app_env:load(?TAKEN_PORT),
-    {ok, Socket} = gen_tcp:listen(?TAKEN_PORT, [{reuseaddr, true}]),
+    {Socket, Port} = take_port(),
+    ok = test_app_env:load(Port),
     {ok, Started} = application:ensure_all_started(test_app),
     try
         ?assertError({nova_test_listener_not_running, _}, nova_test:start(test_app, Config)),
@@ -123,6 +121,11 @@ running_app_kept_on_tls_test(Config) ->
     after
         stop_all(Started)
     end.
+
+take_port() ->
+    {ok, Socket} = gen_tcp:listen(0, []),
+    {ok, Port} = inet:port(Socket),
+    {Socket, Port}.
 
 assert_stopped(Apps) ->
     Running = [A || {A, _, _} <- application:which_applications()],

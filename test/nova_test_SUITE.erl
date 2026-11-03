@@ -179,7 +179,7 @@ groups() ->
     ].
 
 init_per_suite(Config) ->
-    ok = test_app_env:load(58609),
+    ok = test_app_env:load(0),
     nova_test:start(test_app, Config).
 
 end_per_suite(Config) ->
