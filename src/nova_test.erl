@@ -411,15 +411,15 @@ is_cookie_header(Name) ->
 Every `Set-Cookie` header of `Response`, in order, with its attributes.
 
 Attribute names are lowercased; flags such as `HttpOnly` have the value
-`<<>>`. Use it to assert attributes the cookie jar ignores:
+`~""`. Use it to assert attributes the cookie jar ignores:
 
 ```erlang
 {ok, Resp} = nova_test:get("/login", Session),
 [#{attributes := Attrs}] =
-    [C || #{name := <<"session_id">>} = C <- nova_test:set_cookies(Resp)],
-?assert(lists:keymember(<<"httponly">>, 1, Attrs)),
-?assert(lists:keymember(<<"secure">>, 1, Attrs)),
-?assertEqual({<<"samesite">>, <<"Lax">>}, lists:keyfind(<<"samesite">>, 1, Attrs)).
+    [C || #{name := ~"session_id"} = C <- nova_test:set_cookies(Resp)],
+?assert(lists:keymember(~"httponly", 1, Attrs)),
+?assert(lists:keymember(~"secure", 1, Attrs)),
+?assertEqual({~"samesite", ~"Lax"}, lists:keyfind(~"samesite", 1, Attrs)).
 ```
 
 Malformed headers (no `=` in the first pair) are skipped.
@@ -501,9 +501,9 @@ Session = nova_test:session(Config),
 {ok, Form} = nova_test:get("/form", Session),
 Token = nova_test:csrf_token(Form),
 ?assert(is_binary(Token)),
-{ok, Missing} = nova_test:post("/form", #{form => [{<<"a">>, <<"1">>}]}, Session),
+{ok, Missing} = nova_test:post("/form", #{form => [{~"a", ~"1"}]}, Session),
 ?assertStatus(403, Missing),
-{ok, Forged} = nova_test:post("/form", #{form => [{<<"_csrf_token">>, <<"forged">>}]}, Session),
+{ok, Forged} = nova_test:post("/form", #{form => [{~"_csrf_token", ~"forged"}]}, Session),
 ?assertStatus(403, Forged).
 ```
 """.

@@ -8,12 +8,12 @@
 ]).
 
 init(#{req := Req} = State) ->
-    case nova_session:get(Req, <<"user">>) of
+    case nova_session:get(Req, ~"user") of
         {ok, User} -> {ok, State#{user => User}};
         {error, _} -> {error, unauthenticated}
     end.
 
-websocket_handle({text, <<"whoami">>}, #{user := User} = State) ->
+websocket_handle({text, ~"whoami"}, #{user := User} = State) ->
     {reply, {text, User}, State};
 websocket_handle(_Frame, State) ->
     {ok, State}.

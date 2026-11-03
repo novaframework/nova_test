@@ -480,65 +480,65 @@ listener_port_test(Config) ->
     ?assertEqual(ranch:get_port(nova_listener), proplists:get_value(nova_test_port, Config)).
 
 query_matches_request_plugin_test(Config) ->
-    Params = [{<<"q">>, <<"a b&c">>}, {<<"tag">>, <<"x">>}, {<<"tag">>, <<"y">>}],
+    Params = [{~"q", ~"a b&c"}, {~"tag", ~"x"}, {~"tag", ~"y"}],
     Req = nova_test_req:with_query(Params, nova_test_req:new(get, "/test/query")),
     {ok, Resp} = nova_test:get("/test/query?" ++ binary_to_list(maps:get(qs, Req)), Config),
     ?assertStatus(200, Resp),
     ?assertEqual(nova_test:json(Resp), maps:get(parsed_qs, Req)),
-    ?assertJsonResponse(#{<<"tag">> := <<"y">>}, test_controller:echo_query(Req)).
+    ?assertJsonResponse(#{~"tag" := ~"y"}, test_controller:echo_query(Req)).
 
 form_post_test(Config) ->
     Session = nova_test:session(Config),
     {ok, Form} = nova_test:get("/test/form", Session),
-    Fields = [{<<"_csrf_token">>, nova_test:csrf_token(Form)}, {<<"name">>, <<"Åsa & co"/utf8>>}],
+    Fields = [{~"_csrf_token", nova_test:csrf_token(Form)}, {~"name", ~"Åsa & co"}],
     {ok, Resp} = nova_test:post("/test/form", #{form => Fields}, Session),
     ?assertStatus(201, Resp),
-    ?assertJson(#{<<"name">> := <<"Åsa & co"/utf8>>}, Resp),
+    ?assertJson(#{~"name" := ~"Åsa & co"}, Resp),
     Req = nova_test_req:with_form(Fields, nova_test_req:new(post, "/test/form")),
-    ?assertJsonResponse(#{<<"name">> := <<"Åsa & co"/utf8>>}, test_controller:csrf_submit(Req)).
+    ?assertJsonResponse(#{~"name" := ~"Åsa & co"}, test_controller:csrf_submit(Req)).
 
 csrf_session_flow_test(Config) ->
     Session = nova_test:session(Config),
     {ok, Form} = nova_test:get("/test/form", Session),
     ?assertStatus(200, Form),
-    ?assertNotEqual(undefined, nova_test:cookie(<<"session_id">>, Session)),
+    ?assertNotEqual(undefined, nova_test:cookie(~"session_id", Session)),
     Token = nova_test:csrf_token(Form),
     ?assert(is_binary(Token)),
-    {ok, Missing} = nova_test:post("/test/form", #{form => [{<<"a">>, <<"1">>}]}, Session),
+    {ok, Missing} = nova_test:post("/test/form", #{form => [{~"a", ~"1"}]}, Session),
     ?assertStatus(403, Missing),
-    {ok, Bad} = nova_test:post("/test/form", #{form => [{<<"_csrf_token">>, <<"x">>}]}, Session),
+    {ok, Bad} = nova_test:post("/test/form", #{form => [{~"_csrf_token", ~"x"}]}, Session),
     ?assertStatus(403, Bad),
     {ok, Good} = nova_test:post(
-        "/test/form", #{form => [{<<"_csrf_token">>, Token}, {<<"a">>, <<"1">>}]}, Session
+        "/test/form", #{form => [{~"_csrf_token", Token}, {~"a", ~"1"}]}, Session
     ),
     ?assertStatus(201, Good),
-    ?assertJson(#{<<"a">> := <<"1">>}, Good).
+    ?assertJson(#{~"a" := ~"1"}, Good).
 
 csrf_without_session_rejected_test(Config) ->
     {ok, Form} = nova_test:get("/test/form", Config),
     Token = nova_test:csrf_token(Form),
-    {ok, Resp} = nova_test:post("/test/form", #{form => [{<<"_csrf_token">>, Token}]}, Config),
+    {ok, Resp} = nova_test:post("/test/form", #{form => [{~"_csrf_token", Token}]}, Config),
     ?assertStatus(403, Resp).
 
 session_cookie_deleted_test(Config) ->
     Session = nova_test:session(Config),
     {ok, _} = nova_test:get("/test/form", Session),
-    ?assertNotEqual(undefined, nova_test:cookie(<<"session_id">>, Session)),
+    ?assertNotEqual(undefined, nova_test:cookie(~"session_id", Session)),
     {ok, Form} = nova_test:get("/test/form", Session),
     Token = nova_test:csrf_token(Form),
     {ok, Resp} = nova_test:post(
-        "/test/logout", #{form => [{<<"_csrf_token">>, Token}]}, Session
+        "/test/logout", #{form => [{~"_csrf_token", Token}]}, Session
     ),
     ?assertStatus(204, Resp),
-    ?assertEqual(undefined, nova_test:cookie(<<"session_id">>, Session)).
+    ?assertEqual(undefined, nova_test:cookie(~"session_id", Session)).
 
 ws_session_auth_test(Config) ->
     Session = nova_test:session(Config),
     {ok, Resp} = nova_test:get("/test/login", Session),
     ?assertStatus(204, Resp),
     {ok, Conn} = nova_test_ws:connect("/test/ws-auth", Session),
-    ok = nova_test_ws:send_text(<<"whoami">>, Conn),
-    ?assertWsRecv(<<"alice">>, Conn),
+    ok = nova_test_ws:send_text(~"whoami", Conn),
+    ?assertWsRecv(~"alice", Conn),
     ok = nova_test_ws:close(Conn).
 
 ws_without_session_rejected_test(Config) ->
