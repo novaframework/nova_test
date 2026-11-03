@@ -14,7 +14,7 @@ Add `nova_test` to your test dependencies in `rebar.config`:
 {profiles, [
     {test, [
         {deps, [
-            {nova_test, "~> 0.2"}
+            {nova_test, "~> 0.3"}
         ]}
     ]}
 ]}.
@@ -201,7 +201,8 @@ Config2 = nova_test:enable_logging(Config),
 
 The values of the `authorization`, `cookie`, `set-cookie` and `x-csrf-token` headers
 and of the `password`, `password_confirmation` and `_csrf_token` form fields are logged
-as `[redacted]`. JSON and raw bodies are logged as sent.
+as `[redacted]`. JSON and raw bodies are logged as sent. The list is fixed: a custom CSRF
+`field` or `header` passed to `csrf_token/2` is not redacted.
 
 ## WebSocket Tests
 

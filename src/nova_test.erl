@@ -270,6 +270,7 @@ request(Method, Path, Opts, Config) ->
 
 %% Response accessors
 
+-doc "The response's HTTP status code.".
 -spec status(response()) -> integer().
 status(#{status := Status}) -> Status.
 
@@ -284,6 +285,10 @@ json(#{body := Body}) ->
 -spec headers(response()) -> [{string(), string()}].
 headers(#{headers := Headers}) -> Headers.
 
+-doc """
+The value of the first response header named `Name` (case-insensitive), or
+`undefined`. Use `set_cookies/1` for `Set-Cookie`, which can repeat.
+""".
 -spec header(Name :: string(), response()) -> string() | undefined.
 header(Name, #{headers := Headers}) ->
     LowerName = string:lowercase(Name),
@@ -332,6 +337,7 @@ cookies(Config) ->
             end
     end.
 
+-doc "The value of cookie `Name` in `Config` (see `cookies/1`), or `undefined`.".
 -spec cookie(Name :: binary(), Config :: config()) -> binary() | undefined.
 cookie(Name, Config) ->
     maps:get(Name, cookies(Config), undefined).
@@ -347,6 +353,7 @@ set_cookie(Name, Value, Config) ->
             put_config(nova_test_cookies, (cookies(Config))#{Name => Value}, Config)
     end.
 
+-doc "Remove every cookie from `Config`, or from its session's jar.".
 -spec clear_cookies(Config :: config()) -> config().
 clear_cookies(Config) ->
     case session_jar(Config) of
@@ -529,11 +536,14 @@ Log each request and response made with the returned Config to `ct:pal`.
 The values of the `authorization`, `cookie`, `set-cookie` and `x-csrf-token`
 headers and of the `password`, `password_confirmation` and `_csrf_token` form
 fields are logged as `[redacted]`. JSON and raw bodies are logged as sent.
+The list is fixed: a CSRF `field` or `header` name passed to `csrf_token/2`
+is not redacted, since `csrf_token/2` does not change `Config`.
 """.
 -spec enable_logging(Config :: config()) -> config().
 enable_logging(Config) ->
     put_config(nova_test_logging, true, Config).
 
+-doc "Stop the logging turned on by `enable_logging/1`.".
 -spec disable_logging(Config :: config()) -> config().
 disable_logging(Config) ->
     put_config(nova_test_logging, false, Config).
