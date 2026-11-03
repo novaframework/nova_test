@@ -52,9 +52,15 @@ The upgrade request carries the cookies `Config` holds for `Path` (see
 connect(Path, Config) ->
     connect(Path, #{}, Config).
 
+-doc """
+Open a WebSocket to `Path` on the application started by `nova_test:start/1,2`.
+`Path` must start with `/`, as for `nova_test:request/4`; anything else raises
+`{nova_test_invalid_path, #{path, reason}}`.
+""".
 -spec connect(Path :: string(), Opts :: ws_opts(), Config :: [{atom(), term()}]) ->
     {ok, conn()} | {error, term()}.
 connect(Path, Opts, Config) ->
+    ok = nova_test:check_path(Path),
     {ok, _} = application:ensure_all_started(gun),
     Port =
         case proplists:get_value(nova_test_port, Config) of

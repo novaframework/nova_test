@@ -43,6 +43,11 @@ create_user_test(Config) ->
     ?assertStatus(201, Resp).
 ```
 
+Paths must start with `/`. Any other path raises
+`{nova_test_invalid_path, #{path := Path, reason := Reason}}`, because a path such as
+`"@other-host/x"` would send the request, with its cookies and headers, to another host.
+`nova_test_ws:connect/2,3` checks its path the same way.
+
 `nova_test:start/1,2` starts the application and its dependencies and reads the port
 the HTTP listener actually bound from Ranch, so `#{port => 0}` in `cowboy_configuration`
 works. If the listener is not running (Nova only logs "Cowboy could not start" when the

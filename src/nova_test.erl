@@ -57,7 +57,8 @@ module when neither sets it.
     cookie_header/2,
     enable_logging/1,
     disable_logging/1,
-    build_multipart_body/2
+    build_multipart_body/2,
+    check_path/1
 ]).
 
 -export_type([
@@ -210,14 +211,18 @@ delete(Path, Opts, Config) ->
 -doc """
 Send a request to the application started by `start/1,2`.
 
-When `Config` carries a session (see `session/1`), the session's cookies that
-match `Path` are sent and the cookies set by the response are stored in it.
+`Path` must start with `/`; anything else raises
+`{nova_test_invalid_path, #{path, reason}}`, since it would change the host the
+request goes to. When `Config` carries a session (see `session/1`), the
+session's cookies that match `Path` are sent and the cookies set by the
+response are stored in it.
 """.
 -spec request(
     Method :: method(), Path :: string(), Opts :: opts(), Config :: config()
 ) ->
     {ok, response()} | {error, term()}.
 request(Method, Path, Opts, Config) ->
+    ok = check_path(Path),
     URL = "http://localhost:" ++ integer_to_list(port(Config)) ++ Path,
     Headers =
         build_headers(Opts) ++
@@ -456,6 +461,13 @@ ensure_started(App) ->
         {ok, Started} -> Started;
         {error, Reason} -> erlang:error({nova_test_start_failed, #{app => App, reason => Reason}})
     end.
+
+-doc false.
+-spec check_path(term()) -> ok.
+check_path([$/ | _]) ->
+    ok;
+check_path(Path) ->
+    erlang:error({nova_test_invalid_path, #{path => Path, reason => ~"path must start with /"}}).
 
 -spec stop_apps(atom(), [atom()]) -> ok.
 stop_apps(App, Started) ->

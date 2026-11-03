@@ -469,3 +469,22 @@ session_response_updates_only_named_cookies_test() ->
     Resp = #{status => 200, headers => [{"set-cookie", "new=2"}], body => <<>>},
     _ = nova_test:save_cookies(Resp, Session),
     ?assertEqual(#{~"keep" => ~"1", ~"new" => ~"2"}, nova_test:cookies(Session)).
+
+%% Request paths
+
+invalid_path_test_() ->
+    Config = [{nova_test_port, 1}],
+    [
+        ?_assertError(
+            {nova_test_invalid_path, #{path := "@127.0.0.1:1/x", reason := _}},
+            nova_test:get("@127.0.0.1:1/x", Config)
+        ),
+        ?_assertError({nova_test_invalid_path, #{path := "x"}}, nova_test:get("x", Config)),
+        ?_assertError(
+            {nova_test_invalid_path, #{path := "@127.0.0.1:1/x"}},
+            nova_test:post("@127.0.0.1:1/x", #{json => #{}}, Config)
+        ),
+        ?_assertError(
+            {nova_test_invalid_path, #{path := ""}}, nova_test:request(delete, "", #{}, Config)
+        )
+    ].
