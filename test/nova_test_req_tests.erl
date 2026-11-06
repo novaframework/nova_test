@@ -230,3 +230,53 @@ full_chain_test() ->
     Headers = maps:get(headers, Req),
     ?assertEqual(<<"Bearer t">>, maps:get(<<"authorization">>, Headers)),
     ?assertEqual(<<"application/json">>, maps:get(<<"content-type">>, Headers)).
+
+%% with_query/2 - parsed_qs, as nova_request_plugin fills it
+
+query_sets_parsed_qs_test() ->
+    Req = nova_test_req:with_query(
+        #{<<"q">> => <<"erlang">>, page => 2}, nova_test_req:new(get, <<"/search">>)
+    ),
+    ?assertEqual(#{<<"q">> => <<"erlang">>, <<"page">> => <<"2">>}, maps:get(parsed_qs, Req)).
+
+query_is_url_encoded_test() ->
+    Req = nova_test_req:with_query(#{<<"q">> => <<"a b&c">>}, nova_test_req:new(get, <<"/s">>)),
+    ?assertEqual(<<"q=a+b%26c">>, maps:get(qs, Req)),
+    ?assertEqual(#{<<"q">> => <<"a b&c">>}, maps:get(parsed_qs, Req)).
+
+query_list_repeated_keys_test() ->
+    Req = nova_test_req:with_query(
+        [{<<"tag">>, <<"a">>}, {<<"tag">>, <<"b">>}], nova_test_req:new(get, <<"/s">>)
+    ),
+    ?assertEqual(<<"tag=a&tag=b">>, maps:get(qs, Req)),
+    ?assertEqual(
+        maps:from_list(cow_qs:parse_qs(<<"tag=a&tag=b">>)), maps:get(parsed_qs, Req)
+    ).
+
+query_empty_parsed_qs_test() ->
+    Req = nova_test_req:with_query(#{}, nova_test_req:new(get, <<"/s">>)),
+    ?assertEqual(#{}, maps:get(parsed_qs, Req)).
+
+%% with_form/2 - params, as nova_request_plugin fills it
+
+form_sets_params_test() ->
+    Req = nova_test_req:with_form(
+        [{<<"email">>, <<"a@b.se">>}, {<<"_csrf_token">>, <<"x+/=">>}],
+        nova_test_req:new(post, <<"/login">>)
+    ),
+    ?assertEqual(
+        #{<<"email">> => <<"a@b.se">>, <<"_csrf_token">> => <<"x+/=">>}, maps:get(params, Req)
+    ),
+    ?assertEqual(
+        <<"application/x-www-form-urlencoded">>,
+        maps:get(<<"content-type">>, maps:get(headers, Req))
+    ),
+    ?assertEqual(<<"email=a%40b.se&_csrf_token=x%2B%2F%3D">>, maps:get(body, Req)).
+
+form_map_test() ->
+    Req = nova_test_req:with_form(#{name => "Åsa"}, nova_test_req:new(post, <<"/p">>)),
+    ?assertEqual(#{<<"name">> => <<"Åsa"/utf8>>}, maps:get(params, Req)).
+
+body_is_not_parsed_test() ->
+    Req = nova_test_req:with_body(<<"a=1">>, nova_test_req:new(post, <<"/p">>)),
+    ?assertNot(maps:is_key(params, Req)).

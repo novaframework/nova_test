@@ -10,6 +10,9 @@ ok = nova_test_ws:send_json(#{<<"action">> => <<"ping">>}, Conn),
 {ok, Data} = nova_test_ws:recv_json(Conn),
 ok = nova_test_ws:close(Conn).
 ```
+
+The upgrade request carries the cookies `Config` holds for `Path` (see
+`nova_test:session/1`), so a WebSocket behind a session login works.
 """.
 
 -export([
@@ -49,15 +52,21 @@ ok = nova_test_ws:close(Conn).
 connect(Path, Config) ->
     connect(Path, #{}, Config).
 
+-doc """
+Open a WebSocket to `Path` on the application started by `nova_test:start/1,2`.
+`Path` must start with `/`, as for `nova_test:request/4`; anything else raises
+`{nova_test_invalid_path, #{path, reason}}`.
+""".
 -spec connect(Path :: string(), Opts :: ws_opts(), Config :: [{atom(), term()}]) ->
     {ok, conn()} | {error, term()}.
 connect(Path, Opts, Config) ->
+    ok = nova_test:check_path(Path),
     {ok, _} = application:ensure_all_started(gun),
-    Port = proplists:get_value(nova_test_port, Config),
+    Port = nova_test:port(Config),
     {ok, GunPid} = gun:open("localhost", Port, #{protocols => [http]}),
     case gun:await_up(GunPid, 5000) of
         {ok, _Protocol} ->
-            Headers = maps:get(headers, Opts, []),
+            Headers = nova_test:with_cookie_header(maps:get(headers, Opts, []), Path, Config),
             StreamRef = gun:ws_upgrade(GunPid, Path, Headers),
             MonRef = monitor(process, GunPid),
             receive
@@ -94,11 +103,9 @@ send_text(Text, #{gun_pid := Pid, stream_ref := Ref, config := Config}) ->
     maybe_log_ws("SEND", Text, Config),
     gun:ws_send(Pid, Ref, {text, Text}).
 
--spec send_json(Json :: map(), Conn :: conn()) -> ok.
+-spec send_json(Json :: term(), Conn :: conn()) -> ok.
 send_json(Json, Conn) ->
-    JsonLib = json_lib(),
-    Encoded = iolist_to_binary(JsonLib:encode(Json)),
-    send_text(Encoded, Conn).
+    send_text(nova_test_json:encode(Json), Conn).
 
 -spec recv(Conn :: conn()) -> {ok, binary()} | {error, timeout | term()}.
 recv(Conn) ->
@@ -124,17 +131,15 @@ recv(#{gun_pid := Pid, stream_ref := Ref, monitor_ref := MonRef, config := Confi
         {error, timeout}
     end.
 
--spec recv_json(Conn :: conn()) -> {ok, map()} | {error, term()}.
+-spec recv_json(Conn :: conn()) -> {ok, dynamic()} | {error, term()}.
 recv_json(Conn) ->
     recv_json(Conn, 5000).
 
--spec recv_json(Conn :: conn(), Timeout :: non_neg_integer()) -> {ok, map()} | {error, term()}.
+-spec recv_json(Conn :: conn(), Timeout :: non_neg_integer()) -> {ok, dynamic()} | {error, term()}.
 recv_json(Conn, Timeout) ->
     case recv(Conn, Timeout) of
         {ok, Data} ->
-            JsonLib = json_lib(),
-            {ok, Decoded} = JsonLib:decode(Data),
-            {ok, Decoded};
+            {ok, nova_test_json:decode(Data)};
         {error, Reason} ->
             {error, Reason}
     end.
@@ -147,13 +152,6 @@ close(#{gun_pid := Pid, monitor_ref := MonRef, config := Config}) ->
     ok.
 
 %% Internal
-
-json_lib() ->
-    try
-        nova:get_env(json_lib, thoas)
-    catch
-        _:_ -> thoas
-    end.
 
 maybe_log_ws(Action, Detail, Config) ->
     case proplists:get_value(nova_test_logging, Config, false) of

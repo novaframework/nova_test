@@ -9,7 +9,12 @@
     get_headers/1,
     set_cookie/1,
     get_cookie/1,
-    upload/1
+    upload/1,
+    echo_query/1,
+    csrf_form/1,
+    csrf_submit/1,
+    log_out/1,
+    log_in/1
 ]).
 
 get_json(_Req) ->
@@ -45,6 +50,28 @@ upload(Req) ->
     {Parts, _Req2} = read_multipart(Req, []),
     {json, #{<<"parts">> => Parts}}.
 
+echo_query(#{parsed_qs := Qs}) ->
+    {json, Qs}.
+
+csrf_form(#{csrf_token := Token}) ->
+    Html =
+        <<"<form method=\"post\"><input type=\"hidden\" name=\"_csrf_token\" value=\"",
+            Token/binary, "\"></form>">>,
+    {status, 200, #{~"content-type" => ~"text/html"}, Html};
+csrf_form(_Req) ->
+    {status, 500}.
+
+csrf_submit(#{params := Params}) ->
+    {json, maps:remove(~"_csrf_token", Params)}.
+
+log_out(Req) ->
+    {ok, Req1} = nova_session:delete(Req),
+    {status, 204, #{}, ~"", Req1}.
+
+log_in(Req) ->
+    ok = nova_session:set(Req, ~"user", ~"alice"),
+    {status, 204}.
+
 %% Internal
 
 read_multipart(Req, Acc) ->
@@ -58,10 +85,11 @@ read_multipart(Req, Acc) ->
                 <<"size">> => byte_size(Body),
                 <<"body">> => Body
             },
-            Part2 = case Filename of
-                undefined -> Part;
-                _ -> Part#{<<"filename">> => Filename}
-            end,
+            Part2 =
+                case Filename of
+                    undefined -> Part;
+                    _ -> Part#{<<"filename">> => Filename}
+                end,
             read_multipart(Req3, [Part2 | Acc]);
         {done, Req2} ->
             {lists:reverse(Acc), Req2}

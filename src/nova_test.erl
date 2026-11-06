@@ -3,7 +3,6 @@
 HTTP client for integration testing Nova applications.
 
 Start your Nova app, make HTTP requests, and assert on responses.
-Manages cookies across requests via the CT Config proplist.
 
 ```erlang
 Config = nova_test:start(my_app),
@@ -12,6 +11,21 @@ Config = nova_test:start(my_app),
 ?assertJson(#{<<"users">> := _}, Resp),
 nova_test:stop(Config).
 ```
+
+`start/1,2` fails when the application's HTTP listener is not running (for
+example when the port is already in use), and stores the port the listener
+actually bound, so `port => 0` in `cowboy_configuration` works. Only plain
+HTTP listeners are supported; a TLS listener (`use_ssl => true`) makes
+`start/1,2` fail with `nova_test_tls_not_supported`.
+
+Cookies can be carried by hand with `save_cookies/2`, or automatically with
+`session/1`, which attaches a cookie jar to the Config. `csrf_token/1` reads a
+CSRF token from a page, for form flows protected by `nova_csrf_plugin`.
+
+JSON bodies are encoded and decoded through `nova_json` when the running Nova
+has it. Otherwise nova_test reads `json_lib` the way Nova does (the bootstrap
+application's environment, then `nova`'s) and falls back to `thoas`, Nova's
+own default, when neither sets it.
 """.
 
 -export([
@@ -37,25 +51,49 @@ nova_test:stop(Config).
     cookie/2,
     set_cookie/3,
     clear_cookies/1,
+    session/1,
+    csrf_token/1,
+    csrf_token/2,
+    cookie_header/2,
+    set_cookies/1,
     enable_logging/1,
     disable_logging/1,
-    build_multipart_body/2
+    build_multipart_body/2,
+    check_path/1,
+    port/1,
+    with_cookie_header/3
 ]).
 
--export_type([response/0, opts/0, multipart_field/0]).
+-export_type([
+    response/0,
+    opts/0,
+    multipart_field/0,
+    form_fields/0,
+    config/0,
+    method/0,
+    csrf_opts/0,
+    set_cookie/0
+]).
 
 -ifdef(TEST).
 -export([
     build_headers/1,
     build_request/3,
-    cookie_header/1,
-    extract_set_cookies/1,
-    parse_cookie/1,
+    merge_set_cookies/2,
+    path_match/2,
+    default_path/1,
+    parse_set_cookie/1,
     maybe_log/5,
+    log_message/4,
+    started_listener/2,
     generate_boundary/0,
     multipart_part/2
 ]).
 -endif.
+
+-type config() :: [{atom(), term()}].
+
+-type method() :: delete | get | head | options | patch | post | put | trace.
 
 -type response() :: #{
     status := integer(),
@@ -67,9 +105,21 @@ nova_test:stop(Config).
     {field, Name :: binary(), Value :: binary()}
     | {file, Name :: binary(), Filename :: binary(), ContentType :: binary(), Data :: binary()}.
 
+-type csrf_opts() :: #{field => binary(), header => string()}.
+
+-type set_cookie() :: #{
+    name := binary(),
+    value := binary(),
+    attributes := [{binary(), binary()}]
+}.
+
+-type form_value() :: binary() | string() | atom() | integer().
+-type form_fields() :: #{form_value() => form_value()} | [{form_value(), form_value()}].
+
 -type opts() :: #{
     headers => [{binary(), binary()}],
-    json => map(),
+    json => term(),
+    form => form_fields(),
     body => binary(),
     content_type => string(),
     multipart => [multipart_field()]
@@ -77,147 +127,425 @@ nova_test:stop(Config).
 
 %% Lifecycle
 
--spec start(App :: atom()) -> [{atom(), term()}].
+-doc "Equivalent to `start(App, [])`.".
+-spec start(App :: atom()) -> config().
 start(App) ->
     start(App, []).
 
--spec start(App :: atom(), Config :: [{atom(), term()}]) -> [{atom(), term()}].
-start(App, Config) ->
-    application:ensure_all_started(inets),
-    {ok, _} = application:ensure_all_started(App),
-    Port = get_port(),
-    [{nova_test_port, Port}, {nova_test_app, App} | Config].
+-doc """
+Start `App` and its dependencies, and return `Config` with the port of the
+running HTTP listener.
 
--spec stop(Config :: [{atom(), term()}]) -> ok.
+Raises `{nova_test_start_failed, #{app, reason}}` when `inets` or `App` cannot
+be started, and `{nova_test_listener_not_running, #{app, reason, ...}}` when
+the application started but its listener did not (Nova only logs
+"Cowboy could not start" when the port is taken). A TLS listener raises
+`{nova_test_tls_not_supported, #{app, port}}`: the HTTP helpers only speak
+plain HTTP. In these cases the applications started by this call are stopped
+again before raising; an application that was already running is left alone.
+
+The applications this call started, `inets` included, are kept in `Config`
+for `stop/1`.
+""".
+-spec start(App :: atom(), Config :: config()) -> config().
+start(App, Config) ->
+    InetsStarted = ensure_started(inets, []),
+    Started = InetsStarted ++ ensure_started(App, InetsStarted),
+    case listener_port(App) of
+        {ok, Port} ->
+            [{nova_test_port, Port}, {nova_test_app, App}, {nova_test_started, Started} | Config];
+        {tls, Port} ->
+            stop_started(Started),
+            erlang:error({nova_test_tls_not_supported, #{app => App, port => Port}});
+        {error, Reason} ->
+            stop_started(Started),
+            erlang:error(
+                {nova_test_listener_not_running, #{
+                    app => App,
+                    reason => Reason,
+                    configured_port => configured_port()
+                }}
+            )
+    end.
+
+-doc """
+Stop exactly the applications that `start/1,2` started, in reverse start
+order: the application itself, then the dependencies that call started
+(nova, cowboy, ranch, inets and any others), so the next `start/1,2` gets a
+fresh listener. Call it last, after the tests that use the application.
+
+Applications that were already running before `start/1,2`, the application
+itself included, are left running. When two `start/1,2` calls share
+dependencies, the first call started them, so stop the second one first.
+A `Config` threaded through several `start/2` calls stops what each of them
+started, newest first.
+""".
+-spec stop(Config :: config()) -> ok.
 stop(Config) ->
-    App = proplists:get_value(nova_test_app, Config),
-    application:stop(App),
+    _ = [
+        stop_started([A || A <- Apps, is_atom(A)])
+     || Apps <- proplists:get_all_values(nova_test_started, Config), is_list(Apps)
+    ],
     ok.
 
 %% HTTP methods
 
--spec get(Path :: string(), Config :: [{atom(), term()}]) -> {ok, response()} | {error, term()}.
+-spec get(Path :: string(), Config :: config()) -> {ok, response()} | {error, term()}.
 get(Path, Config) ->
     request(get, Path, #{}, Config).
 
--spec get(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) ->
+-spec get(Path :: string(), Opts :: opts(), Config :: config()) ->
     {ok, response()} | {error, term()}.
 get(Path, Opts, Config) ->
     request(get, Path, Opts, Config).
 
--spec post(Path :: string(), Config :: [{atom(), term()}]) -> {ok, response()} | {error, term()}.
+-spec post(Path :: string(), Config :: config()) -> {ok, response()} | {error, term()}.
 post(Path, Config) ->
     request(post, Path, #{}, Config).
 
--spec post(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) ->
+-spec post(Path :: string(), Opts :: opts(), Config :: config()) ->
     {ok, response()} | {error, term()}.
 post(Path, Opts, Config) ->
     request(post, Path, Opts, Config).
 
--spec put(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) ->
+-spec put(Path :: string(), Opts :: opts(), Config :: config()) ->
     {ok, response()} | {error, term()}.
 put(Path, Opts, Config) ->
     request(put, Path, Opts, Config).
 
--spec patch(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) ->
+-spec patch(Path :: string(), Opts :: opts(), Config :: config()) ->
     {ok, response()} | {error, term()}.
 patch(Path, Opts, Config) ->
     request(patch, Path, Opts, Config).
 
--spec delete(Path :: string(), Config :: [{atom(), term()}]) -> {ok, response()} | {error, term()}.
+-spec delete(Path :: string(), Config :: config()) -> {ok, response()} | {error, term()}.
 delete(Path, Config) ->
     request(delete, Path, #{}, Config).
 
--spec delete(Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) ->
+-spec delete(Path :: string(), Opts :: opts(), Config :: config()) ->
     {ok, response()} | {error, term()}.
 delete(Path, Opts, Config) ->
     request(delete, Path, Opts, Config).
 
--spec request(Method :: atom(), Path :: string(), Opts :: opts(), Config :: [{atom(), term()}]) ->
+-doc """
+Send a request to the application started by `start/1,2`.
+
+`Path` must start with `/`; anything else raises
+`{nova_test_invalid_path, #{path, reason}}`, since it would change the host the
+request goes to. When `Config` carries a session (see `session/1`), the
+session's cookies that match `Path` are sent and the cookies set by the
+response are stored in it.
+""".
+-spec request(
+    Method :: method(), Path :: string(), Opts :: opts(), Config :: config()
+) ->
     {ok, response()} | {error, term()}.
 request(Method, Path, Opts, Config) ->
-    Port = proplists:get_value(nova_test_port, Config),
-    URL = "http://localhost:" ++ integer_to_list(Port) ++ Path,
-    Headers = build_headers(Opts) ++ cookie_header(Config),
-    HttpMethod = Method,
+    ok = check_path(Path),
+    URL = "http://localhost:" ++ integer_to_list(port(Config)) ++ Path,
+    Headers = build_headers(#{
+        headers => with_cookie_header(maps:get(headers, Opts, []), Path, Config)
+    }),
     Request = build_request(URL, Headers, Opts),
     HttpOpts = [{autoredirect, false}],
     ReqOpts = [{body_format, binary}],
-    case httpc:request(HttpMethod, Request, HttpOpts, ReqOpts) of
-        {ok, {{_, Status, _}, RespHeaders, Body}} ->
+    case httpc:request(Method, Request, HttpOpts, ReqOpts) of
+        {ok, {{_, Status, _}, RespHeaders, Body}} when
+            is_integer(Status), is_list(RespHeaders), is_binary(Body)
+        ->
             Response = #{
                 status => Status,
-                headers => RespHeaders,
+                headers => httpc_headers(RespHeaders),
                 body => Body
             },
+            store_session_cookies(Response, Path, Config),
             maybe_log(Method, Path, Opts, Response, Config),
             {ok, Response};
+        {ok, Other} ->
+            {error, {unexpected_response, Other}};
         {error, Reason} ->
             {error, Reason}
     end.
 
 %% Response accessors
 
+-doc "The response's HTTP status code.".
 -spec status(response()) -> integer().
 status(#{status := Status}) -> Status.
 
 -spec body(response()) -> binary().
 body(#{body := Body}) -> Body.
 
--spec json(response()) -> map().
+-doc "Decode the response body as JSON.".
+-spec json(response()) -> dynamic().
 json(#{body := Body}) ->
-    JsonLib = json_lib(),
-    {ok, Decoded} = JsonLib:decode(Body),
-    Decoded.
+    nova_test_json:decode(Body).
 
 -spec headers(response()) -> [{string(), string()}].
 headers(#{headers := Headers}) -> Headers.
 
+-doc """
+The value of the first response header named `Name` (case-insensitive), or
+`undefined`. Use `set_cookies/1` for `Set-Cookie`, which can repeat.
+""".
 -spec header(Name :: string(), response()) -> string() | undefined.
 header(Name, #{headers := Headers}) ->
     LowerName = string:lowercase(Name),
-    case lists:keyfind(LowerName, 1, [{string:lowercase(K), V} || {K, V} <- Headers]) of
-        {_, Value} -> Value;
-        false -> undefined
+    case [V || {K, V} <- Headers, string:lowercase(K) =:= LowerName] of
+        [Value | _] -> Value;
+        [] -> undefined
     end.
 
 %% Cookie management
 
--spec save_cookies(response(), [{atom(), term()}]) -> [{atom(), term()}].
+-doc """
+Store the cookies set by `Response` in `Config`. Cookies the response
+expires (`Max-Age=0` or an `Expires` date in the past) are removed.
+
+With a session, the response's request path is not known here, so cookies
+without a `Path` attribute are stored for `/`. Requests made with a session
+store cookies themselves; this is only needed for responses obtained
+another way.
+""".
+-spec save_cookies(response(), config()) -> config().
 save_cookies(#{headers := Headers}, Config) ->
-    SetCookies = extract_set_cookies(Headers),
-    Existing = proplists:get_value(nova_test_cookies, Config, #{}),
-    Merged = maps:merge(Existing, SetCookies),
-    [{nova_test_cookies, Merged} | proplists:delete(nova_test_cookies, Config)].
+    case session_jar(Config) of
+        {ok, Jar} ->
+            update_jar(Jar, Headers, "/"),
+            Config;
+        error ->
+            put_config(nova_test_cookies, merge_set_cookies(Headers, cookies(Config)), Config)
+    end.
 
--spec cookies(Config :: [{atom(), term()}]) -> map().
+-doc """
+The cookies held by `Config`, from its session if it has one. When a session
+holds a name under several paths, the most specific path wins.
+""".
+-spec cookies(Config :: config()) -> #{binary() => binary()}.
 cookies(Config) ->
-    proplists:get_value(nova_test_cookies, Config, #{}).
+    case session_jar(Config) of
+        {ok, Jar} ->
+            Entries = lists:sort([{byte_size(P), P, N, V} || {P, N, V} <- jar_entries(Jar)]),
+            #{N => V || {_, _, N, V} <- Entries, is_binary(N), is_binary(V)};
+        error ->
+            case proplists:get_value(nova_test_cookies, Config, #{}) of
+                Cookies when is_map(Cookies) ->
+                    #{N => V || N := V <- Cookies, is_binary(N), is_binary(V)};
+                _ ->
+                    #{}
+            end
+    end.
 
--spec cookie(Name :: binary(), Config :: [{atom(), term()}]) -> binary() | undefined.
+-doc "The value of cookie `Name` in `Config` (see `cookies/1`), or `undefined`.".
+-spec cookie(Name :: binary(), Config :: config()) -> binary() | undefined.
 cookie(Name, Config) ->
     maps:get(Name, cookies(Config), undefined).
 
--spec set_cookie(Name :: binary(), Value :: binary(), Config :: [{atom(), term()}]) ->
-    [{atom(), term()}].
+-doc "Set a cookie. In a session it is stored for path `/`.".
+-spec set_cookie(Name :: binary(), Value :: binary(), Config :: config()) -> config().
 set_cookie(Name, Value, Config) ->
-    Existing = proplists:get_value(nova_test_cookies, Config, #{}),
-    Updated = Existing#{Name => Value},
-    [{nova_test_cookies, Updated} | proplists:delete(nova_test_cookies, Config)].
+    case session_jar(Config) of
+        {ok, Jar} ->
+            true = ets:insert(Jar, {{Name, ~"/"}, Value}),
+            Config;
+        error ->
+            put_config(nova_test_cookies, (cookies(Config))#{Name => Value}, Config)
+    end.
 
--spec clear_cookies(Config :: [{atom(), term()}]) -> [{atom(), term()}].
+-doc "Remove every cookie from `Config`, or from its session's jar.".
+-spec clear_cookies(Config :: config()) -> config().
 clear_cookies(Config) ->
-    [{nova_test_cookies, #{}} | proplists:delete(nova_test_cookies, Config)].
+    case session_jar(Config) of
+        {ok, Jar} ->
+            true = ets:delete_all_objects(Jar),
+            Config;
+        error ->
+            put_config(nova_test_cookies, #{}, Config)
+    end.
+
+-doc """
+The `cookie` request header `Config` would send for a request to `Path`, as
+`[]` or `[{<<"cookie">>, Value}]`. With a session only the cookies whose
+`Path` matches are included, most specific path first; without one, every
+cookie in `Config`. Use it to add cookies to requests made with another
+client; `nova_test_ws:connect/2,3` already does. The request helpers and
+`nova_test_ws:connect/3` merge a `cookie` header passed in `headers` into the
+same header, the caller's pairs first.
+""".
+-spec cookie_header(Path :: string(), Config :: config()) -> [{binary(), binary()}].
+cookie_header(Path, Config) ->
+    Pairs =
+        case session_jar(Config) of
+            {ok, Jar} ->
+                RequestPath = request_path(Path),
+                Matching = [
+                    {-byte_size(P), N, V}
+                 || {P, N, V} <- jar_entries(Jar), path_match(RequestPath, P)
+                ],
+                [{N, V} || {_, N, V} <- lists:sort(Matching)];
+            error ->
+                lists:sort(maps:to_list(cookies(Config)))
+        end,
+    case Pairs of
+        [] ->
+            [];
+        _ ->
+            <<"; ", Value/binary>> = <<
+                <<"; ", N/binary, "=", V/binary>>
+             || {N, V} <- Pairs, is_binary(N), is_binary(V)
+            >>,
+            [{~"cookie", Value}]
+    end.
+
+-doc false.
+-spec with_cookie_header([{binary(), binary()}], string(), config()) -> [{binary(), binary()}].
+with_cookie_header(Headers, Path, Config) ->
+    case cookie_header(Path, Config) of
+        [] ->
+            Headers;
+        [{_, JarCookies}] ->
+            Own = [V || {K, V} <- Headers, is_cookie_header(K)],
+            Rest = [H || {K, _} = H <- Headers, not is_cookie_header(K)],
+            <<"; ", Value/binary>> = <<<<"; ", C/binary>> || C <- Own ++ [JarCookies]>>,
+            Rest ++ [{~"cookie", Value}]
+    end.
+
+-spec is_cookie_header(binary()) -> boolean().
+is_cookie_header(Name) ->
+    string:lowercase(Name) =:= ~"cookie".
+
+-doc """
+Every `Set-Cookie` header of `Response`, in order, with its attributes.
+
+Attribute names are lowercased; flags such as `HttpOnly` have the value
+`~""`. Use it to assert attributes the cookie jar ignores:
+
+```erlang
+{ok, Resp} = nova_test:get("/login", Session),
+[#{attributes := Attrs}] =
+    [C || #{name := ~"session_id"} = C <- nova_test:set_cookies(Resp)],
+?assert(lists:keymember(~"httponly", 1, Attrs)),
+?assert(lists:keymember(~"secure", 1, Attrs)),
+?assertEqual({~"samesite", ~"Lax"}, lists:keyfind(~"samesite", 1, Attrs)).
+```
+
+Malformed headers (no `=` in the first pair) are skipped.
+""".
+-spec set_cookies(response()) -> [set_cookie()].
+set_cookies(#{headers := Headers}) ->
+    [
+        #{name => Name, value => Value, attributes => Attributes}
+     || CookieStr <- set_cookie_values(Headers),
+        {Name, Value, Attributes} <- [split_set_cookie(CookieStr)]
+    ].
+
+-doc """
+Attach a new cookie jar to `Config`.
+
+Every request made with the returned Config sends the jar's cookies that
+match the request path and stores the cookies set by the response, like a
+browser would, so session and CSRF flows work without `save_cookies/2`.
+Cookies are keyed on name and `Path` (cookies without `Path` get the default
+path of the request, as in RFC 6265); `Domain`, `Secure` and `HttpOnly` are
+ignored, since every request goes to the one application under test; use
+`set_cookies/1` to assert them. `cookies/1`, `cookie/2`, `set_cookie/3` and `clear_cookies/1` read and write
+the jar. The jar starts with the cookies `Config` already holds, for path
+`/`.
+
+Use one jar per simulated client, from one process at a time. The jar is an
+ETS table owned by the calling process: create it in the test case (or
+`init_per_testcase/2`), not in `init_per_suite/1` or `init_per_group/2`,
+whose processes exit before the test cases run.
+
+```erlang
+Session = nova_test:session(Config),
+{ok, Form} = nova_test:get("/login", Session),
+{ok, Resp} = nova_test:post("/login", #{form => [
+    {~"_csrf_token", nova_test:csrf_token(Form)},
+    {~"email", ~"alice@example.com"},
+    {~"password", ~"secret"}
+]}, Session),
+?assertStatus(302, Resp),
+{ok, Page} = nova_test:get("/dashboard", Session).
+```
+""".
+-spec session(Config :: config()) -> config().
+session(Config) ->
+    Cookies = cookies(Config),
+    Jar = ets:new(nova_test_session, [set, public]),
+    true = ets:insert(Jar, [{{N, ~"/"}, V} || N := V <- Cookies]),
+    put_config(nova_test_session, Jar, [KV || {K, _} = KV <- Config, K =/= nova_test_cookies]).
+
+-doc "Equivalent to `csrf_token(#{}, Source)`.".
+-spec csrf_token(response() | binary()) -> binary() | undefined.
+csrf_token(Source) ->
+    csrf_token(#{}, Source).
+
+-doc """
+Find a CSRF token in a response or an HTML binary, using the common
+conventions `nova_csrf_plugin` follows.
+
+Looks for the `value` of an `<input>` whose `name` is the `field` option
+(default `~"_csrf_token"`, the plugin's `field_name` default), and then, for a
+response, for the header named by the `header` option (default
+`"x-csrf-token"`, the plugin's `header_name` default). Pass the plugin's
+`field_name`/`header_name` here if you changed them.
+
+`nova_csrf_plugin` only reads `x-csrf-token` from requests and never sets it
+on responses, so the header fallback finds a token only when the application
+sets that header itself.
+
+Returns `undefined` when there is no token. Sending `undefined` as a `form`
+value raises `{nova_test_undefined_form_value, #{field, reason}}` instead of
+posting the string `"undefined"`.
+
+A negative test must use a session that holds a token, since the plugin also
+answers 403 when there is no session at all:
+
+```erlang
+Session = nova_test:session(Config),
+{ok, Form} = nova_test:get("/form", Session),
+Token = nova_test:csrf_token(Form),
+?assert(is_binary(Token)),
+{ok, Missing} = nova_test:post("/form", #{form => [{~"a", ~"1"}]}, Session),
+?assertStatus(403, Missing),
+{ok, Forged} = nova_test:post("/form", #{form => [{~"_csrf_token", ~"forged"}]}, Session),
+?assertStatus(403, Forged).
+```
+""".
+-spec csrf_token(Opts :: csrf_opts(), response() | binary()) -> binary() | undefined.
+csrf_token(Opts, Html) when is_binary(Html) ->
+    Field = maps:get(field, Opts, ~"_csrf_token"),
+    tag_attribute(Html, ~"input", ~"name", Field, ~"value");
+csrf_token(Opts, #{body := Body} = Response) ->
+    case csrf_token(Opts, Body) of
+        undefined ->
+            case header(maps:get(header, Opts, "x-csrf-token"), Response) of
+                undefined -> undefined;
+                Token -> list_to_binary(Token)
+            end;
+        Token ->
+            Token
+    end.
 
 %% Logging
 
--spec enable_logging(Config :: [{atom(), term()}]) -> [{atom(), term()}].
+-doc """
+Log each request and response made with the returned Config to `ct:pal`.
+The values of the `authorization`, `cookie`, `set-cookie` and `x-csrf-token`
+headers and of the `password`, `password_confirmation` and `_csrf_token` form
+fields are logged as `[redacted]`. JSON and raw bodies are logged as sent.
+The list is fixed: a CSRF `field` or `header` name passed to `csrf_token/2`
+is not redacted, since `csrf_token/2` does not change `Config`.
+""".
+-spec enable_logging(Config :: config()) -> config().
 enable_logging(Config) ->
-    [{nova_test_logging, true} | proplists:delete(nova_test_logging, Config)].
+    put_config(nova_test_logging, true, Config).
 
--spec disable_logging(Config :: [{atom(), term()}]) -> [{atom(), term()}].
+-doc "Stop the logging turned on by `enable_logging/1`.".
+-spec disable_logging(Config :: config()) -> config().
 disable_logging(Config) ->
-    [{nova_test_logging, false} | proplists:delete(nova_test_logging, Config)].
+    put_config(nova_test_logging, false, Config).
 
 %% Multipart
 
@@ -228,9 +556,82 @@ build_multipart_body(Fields, Boundary) ->
 
 %% Internal
 
-get_port() ->
-    Config = application:get_env(nova, cowboy_configuration, #{}),
-    maps:get(port, Config, 8080).
+-spec ensure_started(atom(), [atom()]) -> [atom()].
+ensure_started(App, StartedBefore) ->
+    case application:ensure_all_started(App) of
+        {ok, Started} ->
+            Started;
+        {error, Reason} ->
+            stop_started(StartedBefore),
+            erlang:error({nova_test_start_failed, #{app => App, reason => Reason}})
+    end.
+
+-doc false.
+-spec check_path(term()) -> ok.
+check_path([$/ | _]) ->
+    ok;
+check_path(Path) ->
+    erlang:error({nova_test_invalid_path, #{path => Path, reason => ~"path must start with /"}}).
+
+-spec stop_started([atom()]) -> ok.
+stop_started([]) ->
+    ok;
+stop_started([App | Rest]) ->
+    ok = stop_started(Rest),
+    _ = application:stop(App),
+    ok.
+
+listener_port(App) ->
+    case listener_ref(App) of
+        {ok, Ref} ->
+            try {ranch:get_port(Ref), ranch:info(Ref)} of
+                {Port, #{transport := ranch_ssl}} when is_integer(Port) -> {tls, Port};
+                {Port, _} when is_integer(Port) -> {ok, Port};
+                _ -> {error, {no_tcp_port, Ref}}
+            catch
+                error:badarg -> {error, {listener_not_found, Ref}}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% Nova before 0.17 has a single listener, always named nova_listener.
+listener_ref(App) ->
+    _ = code:ensure_loaded(nova_sup),
+    case erlang:function_exported(nova_sup, get_started_applications, 0) of
+        true -> started_listener(App, nova_sup:get_started_applications());
+        false -> {ok, nova_listener}
+    end.
+
+%% An application can have several listeners (an HTTP and an HTTPS one, or
+%% one added with nova_sup:add_application/2). Prefer the one bound to the
+%% port cowboy_configuration asks for, so the choice does not depend on the
+%% order of Nova's listener table.
+started_listener(App, Started) ->
+    Bootstrap = application:get_env(nova, bootstrap_application, undefined),
+    Own = [S || #{app := A, listener := _} = S <- Started, A =:= App],
+    Boot = [S || #{app := A, listener := _} = S <- Started, A =:= Bootstrap],
+    Candidates = Own ++ Boot,
+    Port = configured_port(),
+    case [S || S <- Candidates, maps:get(port, S, undefined) =:= Port] ++ Candidates of
+        [#{listener := Ref} | _] -> {ok, Ref};
+        _ -> {error, no_listener_for_app}
+    end.
+
+configured_port() ->
+    case application:get_env(nova, cowboy_configuration, #{}) of
+        #{use_ssl := true} = TLS -> maps:get(ssl_port, TLS, 8443);
+        #{port := Port} -> Port;
+        _ -> 8080
+    end.
+
+-doc false.
+-spec port(config()) -> inet:port_number().
+port(Config) ->
+    case proplists:get_value(nova_test_port, Config) of
+        Port when is_integer(Port), Port >= 0, Port =< 65535 -> Port;
+        _ -> erlang:error({nova_test_not_started, ~"call nova_test:start/1,2 first"})
+    end.
 
 build_headers(#{headers := Headers}) ->
     [{binary_to_list(K), binary_to_list(V)} || {K, V} <- Headers];
@@ -238,117 +639,323 @@ build_headers(_) ->
     [].
 
 build_request(URL, Headers, #{json := Json}) ->
-    JsonLib = json_lib(),
-    Body = JsonLib:encode(Json),
-    BodyStr =
-        case Body of
-            B when is_binary(B) -> binary_to_list(B);
-            B when is_list(B) -> B
-        end,
-    {URL, Headers, "application/json", BodyStr};
+    {URL, Headers, "application/json", nova_test_json:encode(Json)};
+build_request(URL, Headers, #{form := Fields}) ->
+    {URL, Headers, "application/x-www-form-urlencoded", nova_test_req:encode_qs(Fields)};
 build_request(URL, Headers, #{multipart := Fields}) ->
     Boundary = generate_boundary(),
     Body = iolist_to_binary(build_multipart_body(Fields, Boundary)),
     CT = "multipart/form-data; boundary=" ++ binary_to_list(Boundary),
-    {URL, Headers, CT, binary_to_list(Body)};
+    {URL, Headers, CT, Body};
 build_request(URL, Headers, #{body := Body, content_type := CT}) ->
-    BodyStr = binary_to_list(Body),
-    {URL, Headers, CT, BodyStr};
+    {URL, Headers, CT, Body};
 build_request(URL, Headers, #{body := Body}) ->
-    BodyStr = binary_to_list(Body),
-    {URL, Headers, "text/plain", BodyStr};
+    {URL, Headers, "text/plain", Body};
 build_request(URL, Headers, _) ->
     {URL, Headers}.
 
-json_lib() ->
-    try
-        nova:get_env(json_lib, thoas)
-    catch
-        _:_ -> thoas
+-spec httpc_headers(dynamic()) -> [{string(), string()}].
+httpc_headers(Headers) ->
+    [{K, V} || {K, V} <- Headers].
+
+-spec put_config(atom(), term(), config()) -> config().
+put_config(Key, Value, Config) ->
+    [{Key, Value} | [KV || {K, _} = KV <- Config, K =/= Key]].
+
+-spec session_jar(config()) -> {ok, ets:tid()} | error.
+session_jar(Config) ->
+    case proplists:get_value(nova_test_session, Config) of
+        undefined ->
+            error;
+        Jar ->
+            live_jar(Jar)
     end.
 
-cookie_header(Config) ->
-    case proplists:get_value(nova_test_cookies, Config, #{}) of
-        Cookies when map_size(Cookies) =:= 0 ->
-            [];
-        Cookies ->
-            CookieStr = maps:fold(
-                fun(Name, Value, Acc) ->
-                    Pair = binary_to_list(Name) ++ "=" ++ binary_to_list(Value),
-                    case Acc of
-                        "" -> Pair;
-                        _ -> Acc ++ "; " ++ Pair
-                    end
+%% The jar comes back out of the untyped Config proplist.
+-spec live_jar(dynamic()) -> {ok, ets:tid()}.
+live_jar(Jar) ->
+    case ets:info(Jar, id) of
+        undefined -> erlang:error({nova_test_session_closed, Jar});
+        _ -> {ok, Jar}
+    end.
+
+store_session_cookies(#{headers := Headers}, Path, Config) ->
+    case session_jar(Config) of
+        {ok, Jar} -> update_jar(Jar, Headers, Path);
+        error -> ok
+    end.
+
+-spec jar_entries(ets:tid()) -> [{binary(), binary(), binary()}].
+jar_entries(Jar) ->
+    [
+        {P, N, V}
+     || {{N, P}, V} <- ets:tab2list(Jar), is_binary(N), is_binary(P), is_binary(V)
+    ].
+
+-spec update_jar(ets:tid(), [{string(), string()}], string()) -> ok.
+update_jar(Jar, Headers, Path) ->
+    DefaultPath = default_path(request_path(Path)),
+    _ = [update_jar_cookie(Jar, Cookie, DefaultPath) || Cookie <- parsed_set_cookies(Headers)],
+    ok.
+
+update_jar_cookie(Jar, {Name, _, expired, CookiePath}, DefaultPath) ->
+    true = ets:delete(Jar, {Name, cookie_path(CookiePath, DefaultPath)});
+update_jar_cookie(Jar, {Name, Value, active, CookiePath}, DefaultPath) ->
+    true = ets:insert(Jar, {{Name, cookie_path(CookiePath, DefaultPath)}, Value}).
+
+cookie_path(<<"/", _/binary>> = Path, _DefaultPath) -> Path;
+cookie_path(_, DefaultPath) -> DefaultPath.
+
+-spec request_path(string()) -> binary().
+request_path(Path) ->
+    [P | _] = string:split(Path, "?"),
+    trimmed_binary(P).
+
+%% RFC 6265, section 5.1.4.
+-spec default_path(binary()) -> binary().
+default_path(<<"/", _/binary>> = Path) ->
+    case lists:reverse([P || {P, _} <- binary:matches(Path, ~"/"), is_integer(P)]) of
+        [Last | _] when is_integer(Last), Last > 0 -> binary:part(Path, 0, Last);
+        _ -> ~"/"
+    end;
+default_path(_) ->
+    ~"/".
+
+-spec path_match(binary(), binary()) -> boolean().
+path_match(Path, Path) ->
+    true;
+path_match(RequestPath, CookiePath) ->
+    Size = byte_size(CookiePath),
+    case RequestPath of
+        <<CookiePath:Size/binary, Rest/binary>> ->
+            binary:last(CookiePath) =:= $/ orelse binary:first(Rest) =:= $/;
+        _ ->
+            false
+    end.
+
+merge_set_cookies(Headers, Cookies) ->
+    merge_cookies(parsed_set_cookies(Headers), Cookies).
+
+merge_cookies([], Cookies) ->
+    Cookies;
+merge_cookies([{Name, _, expired, _} | Rest], Cookies) ->
+    merge_cookies(Rest, maps:remove(Name, Cookies));
+merge_cookies([{Name, Value, active, _} | Rest], Cookies) ->
+    merge_cookies(Rest, Cookies#{Name => Value}).
+
+-spec set_cookie_values([{string(), string()}]) -> [string()].
+set_cookie_values(Headers) ->
+    [V || {K, V} <- Headers, string:lowercase(K) =:= "set-cookie"].
+
+-spec parsed_set_cookies([{string(), string()}]) ->
+    [{binary(), binary(), active | expired, binary() | undefined}].
+parsed_set_cookies(Headers) ->
+    [C || V <- set_cookie_values(Headers), C <- [parse_set_cookie(V)], C =/= error].
+
+-spec parse_set_cookie(string()) ->
+    {binary(), binary(), active | expired, binary() | undefined} | error.
+parse_set_cookie(CookieStr) ->
+    case split_set_cookie(CookieStr) of
+        {Name, Value, Attributes} ->
+            Path =
+                case [P || {~"path", P} <- Attributes] of
+                    [P | _] -> P;
+                    [] -> undefined
                 end,
-                "",
-                Cookies
-            ),
-            [{"cookie", CookieStr}]
+            {Name, Value, expiry(Attributes), Path};
+        error ->
+            error
     end.
 
-extract_set_cookies(Headers) ->
-    lists:foldl(
-        fun({Key, Value}, Acc) ->
-            case string:lowercase(Key) of
-                "set-cookie" ->
-                    case parse_cookie(Value) of
-                        {Name, Val} -> Acc#{Name => Val};
-                        error -> Acc
-                    end;
-                _ ->
-                    Acc
-            end
-        end,
-        #{},
-        Headers
-    ).
-
-parse_cookie(CookieStr) ->
-    case string:split(CookieStr, ";") of
-        [NameValue | _] ->
-            case string:split(string:trim(NameValue), "=") of
-                [Name, Value] ->
-                    {list_to_binary(string:trim(Name)), list_to_binary(string:trim(Value))};
-                _ ->
-                    error
-            end;
+-spec split_set_cookie(string()) -> {binary(), binary(), [{binary(), binary()}]} | error.
+split_set_cookie(CookieStr) ->
+    [NameValue | Attributes] = string:split(CookieStr, ";", all),
+    case string:split(trim_ows(NameValue), "=") of
+        [Name, Value] when Name =/= "" ->
+            {header_bytes(Name), header_bytes(Value), [cookie_attribute(A) || A <- Attributes]};
         _ ->
             error
     end.
 
-maybe_log(Method, Path, Opts, #{status := Status, headers := RespHeaders, body := Body}, Config) ->
-    case proplists:get_value(nova_test_logging, Config, false) of
-        true ->
-            ReqBody =
-                case Opts of
-                    #{json := Json} ->
-                        JsonLib = json_lib(),
-                        JsonLib:encode(Json);
-                    #{body := B} ->
-                        B;
-                    _ ->
-                        <<>>
-                end,
-            ct:pal(
-                "~n=== nova_test ~s ~s ===~n"
-                "Request headers: ~p~n"
-                "Request body: ~ts~n"
-                "Response status: ~p~n"
-                "Response headers: ~p~n"
-                "Response body: ~ts~n",
-                [
-                    string:uppercase(atom_to_list(Method)),
-                    Path,
-                    build_headers(Opts),
-                    ReqBody,
-                    Status,
-                    RespHeaders,
-                    Body
-                ]
-            );
-        false ->
-            ok
+-spec trimmed_binary(unicode:chardata()) -> binary().
+trimmed_binary(String) ->
+    case unicode:characters_to_binary(string:trim(String)) of
+        Binary when is_binary(Binary) -> Binary;
+        _ -> erlang:error({invalid_cookie, String})
     end.
+
+%% httpc header values are byte lists, so each element is one byte. Only
+%% SP and HTAB are trimmed: string:trim/1 would also strip byte 16#85, which
+%% ends UTF-8 sequences such as the one for "Å".
+-spec header_bytes(unicode:chardata()) -> binary().
+header_bytes(Bytes) ->
+    case unicode:characters_to_binary(trim_ows(Bytes), latin1, latin1) of
+        Binary when is_binary(Binary) -> Binary;
+        _ -> erlang:error({invalid_cookie, Bytes})
+    end.
+
+-spec trim_ows(unicode:chardata()) -> unicode:chardata().
+trim_ows(Bytes) ->
+    string:trim(Bytes, both, " \t").
+
+-spec cookie_attribute(unicode:chardata()) -> {binary(), binary()}.
+cookie_attribute(Attribute) ->
+    case string:split(trim_ows(Attribute), "=") of
+        [Name, Value] -> {header_bytes(string:lowercase(Name)), header_bytes(Value)};
+        [Name | _] -> {header_bytes(string:lowercase(Name)), <<>>}
+    end.
+
+%% Max-Age wins over Expires (RFC 6265, section 5.3).
+-spec expiry([{binary(), binary()}]) -> active | expired.
+expiry(Attributes) ->
+    case {[V || {~"max-age", V} <- Attributes], [V || {~"expires", V} <- Attributes]} of
+        {[MaxAge | _], _} ->
+            case string:to_integer(MaxAge) of
+                {Seconds, <<>>} when is_integer(Seconds), Seconds =< 0 -> expired;
+                _ -> active
+            end;
+        {[], [Date | _]} ->
+            date_expiry(binary_to_list(Date));
+        {[], []} ->
+            active
+    end.
+
+date_expiry(Date) ->
+    case httpd_util:convert_request_date(Date) of
+        bad_date ->
+            active;
+        DateTime ->
+            case DateTime =< calendar:universal_time() of
+                true -> expired;
+                false -> active
+            end
+    end.
+
+%% A `>` inside a quoted attribute value does not end the tag.
+tag_attribute(Html, Tag, KeyAttribute, KeyValue, ValueAttribute) ->
+    Pattern = <<"<", Tag/binary, "\\b(?:\"[^\"]*\"|'[^']*'|[^'\">])*>">>,
+    case re:run(Html, Pattern, [global, caseless, {capture, first, binary}]) of
+        {match, Matches} ->
+            find_tag([T || [T] <- Matches], KeyAttribute, KeyValue, ValueAttribute);
+        nomatch ->
+            undefined
+    end.
+
+find_tag([], _KeyAttribute, _KeyValue, _ValueAttribute) ->
+    undefined;
+find_tag([Tag | Rest], KeyAttribute, KeyValue, ValueAttribute) ->
+    Attributes = tag_attributes(Tag),
+    case
+        {lists:keyfind(KeyAttribute, 1, Attributes), lists:keyfind(ValueAttribute, 1, Attributes)}
+    of
+        {{_, KeyValue}, {_, Value}} -> Value;
+        _ -> find_tag(Rest, KeyAttribute, KeyValue, ValueAttribute)
+    end.
+
+%% Tokenising the whole tag keeps text inside a quoted value from being read
+%% as another attribute.
+-spec tag_attributes(binary()) -> [{binary(), binary()}].
+tag_attributes(Tag) ->
+    Pattern = ~"\\s([^\\s\"'>/=]+)\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s\"'>]+)",
+    case re:run(Tag, Pattern, [global, {capture, all_but_first, binary}]) of
+        {match, Matches} ->
+            [
+                {lowercase(N), unescape_html(unquote(V))}
+             || [N, V] <- Matches, is_binary(N), is_binary(V)
+            ];
+        nomatch ->
+            []
+    end.
+
+-spec lowercase(binary()) -> binary().
+lowercase(Name) ->
+    case string:lowercase(Name) of
+        Lower when is_binary(Lower) -> Lower;
+        _ -> Name
+    end.
+
+-spec unquote(binary()) -> binary().
+unquote(<<Q, Rest/binary>>) when Q =:= $"; Q =:= $' ->
+    binary:part(Rest, 0, byte_size(Rest) - 1);
+unquote(Value) ->
+    Value.
+
+unescape_html(Value) ->
+    unescape_html(Value, [
+        {~"&quot;", ~"\""},
+        {~"&#34;", ~"\""},
+        {~"&#39;", ~"'"},
+        {~"&#x27;", ~"'"},
+        {~"&#x2F;", ~"/"},
+        {~"&#47;", ~"/"},
+        {~"&#x3D;", ~"="},
+        {~"&#61;", ~"="},
+        {~"&#43;", ~"+"},
+        {~"&#x2B;", ~"+"},
+        {~"&lt;", ~"<"},
+        {~"&gt;", ~">"},
+        {~"&amp;", ~"&"}
+    ]).
+
+unescape_html(Value, []) ->
+    Value;
+unescape_html(Value, [{Entity, Char} | Rest]) ->
+    unescape_html(binary:replace(Value, Entity, Char, [global]), Rest).
+
+maybe_log(Method, Path, Opts, Response, Config) ->
+    case proplists:get_value(nova_test_logging, Config, false) of
+        true -> ct:pal("~ts", [log_message(Method, Path, Opts, Response)]);
+        _ -> ok
+    end.
+
+-spec log_message(method(), string(), opts(), response()) -> unicode:chardata().
+log_message(Method, Path, Opts, #{status := Status, headers := RespHeaders, body := Body}) ->
+    ReqBody =
+        case Opts of
+            #{json := Json} -> nova_test_json:encode(Json);
+            #{form := Fields} -> redacted_form(Fields);
+            #{body := B} -> B;
+            _ -> <<>>
+        end,
+    io_lib:format(
+        "~n=== nova_test ~s ~s ===~n"
+        "Request headers: ~p~n"
+        "Request body: ~ts~n"
+        "Response status: ~p~n"
+        "Response headers: ~p~n"
+        "Response body: ~ts~n",
+        [
+            string:uppercase(atom_to_list(Method)),
+            Path,
+            redacted_headers(build_headers(Opts)),
+            ReqBody,
+            Status,
+            redacted_headers(RespHeaders),
+            Body
+        ]
+    ).
+
+-spec redacted_headers([{string(), string()}]) -> [{string(), string()}].
+redacted_headers(Headers) ->
+    Secret = ["authorization", "cookie", "set-cookie", "x-csrf-token"],
+    [
+        case lists:member(string:lowercase(K), Secret) of
+            true -> {K, "[redacted]"};
+            false -> {K, V}
+        end
+     || {K, V} <- Headers
+    ].
+
+-spec redacted_form(form_fields()) -> binary().
+redacted_form(Fields) ->
+    Secret = [~"password", ~"password_confirmation", ~"_csrf_token"],
+    cow_qs:qs([
+        case lists:member(string:lowercase(K), Secret) of
+            true -> {K, ~"[redacted]"};
+            false -> {K, V}
+        end
+     || {K, V} <- cow_qs:parse_qs(nova_test_req:encode_qs(Fields))
+    ]).
 
 generate_boundary() ->
     Int = erlang:unique_integer([positive]),
